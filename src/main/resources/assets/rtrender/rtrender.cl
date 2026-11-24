@@ -458,6 +458,17 @@ __kernel void render(
     Res r = trace_color(SP, o, d, maxDist, 0);
     float3 col = r.col; float alpha = r.alpha; float tdepth = r.t;
 
+    // sky miss: no surface hit -> skip water handling and depth transform
+    if (tdepth < 0.0f) {
+        col = clamp(col, 0.0f, 1.0f);
+        alpha = clamp(alpha, 0.0f, 1.0f);
+        uint pr = (uint)(col.x * 255.0f + 0.5f), pg = (uint)(col.y * 255.0f + 0.5f), pbv = (uint)(col.z * 255.0f + 0.5f);
+        uint pa8 = (uint)(alpha * 255.0f + 0.5f);
+        outColor[gid] = pr | (pg << 8) | (pbv << 16) | (pa8 << 24);
+        outDepth[gid] = 1.0f;
+        return;
+    }
+
     if (r.water) {
         float3 n = wave_normal(r.hp.xz, P[P_TIME], P[P_WAVE]);
         float cosi = clamp(dot(-d, n), 0.0f, 1.0f);
