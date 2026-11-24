@@ -11,6 +11,7 @@ public final class Tree64 {
     public long[] masks;
     public int[] ptrs;
     public short[] mats;
+    public byte[] lightLeaves;
     public int nodeCount;
 
     private final VoxelWorld vol;
@@ -20,11 +21,12 @@ public final class Tree64 {
     private final int[][] lp = new int[4][];
     private final int[] ln = new int[4];
     private short[] mb = new short[1 << 14];
-    private int mn;
+    private int mn, ln_light;
 
     private Tree64(VoxelWorld vol, int ox, int oz, byte[] palFlags) {
         this.vol = vol; this.ox = ox; this.oz = oz; this.palFlags = palFlags;
         for (int i = 0; i < 4; i++) { lm[i] = new long[1 << 10]; lp[i] = new int[1 << 10]; }
+        lightLeaves = new byte[1 << 12];
     }
 
     public static Tree64 build(VoxelWorld vol, int ox, int oz, byte[] palFlags) {
@@ -32,6 +34,7 @@ public final class Tree64 {
         boolean any = t.node(3, 0, 0, 0);
         if (!any) t.push(3, 0L, 0);
         t.finish();
+        t.lightLeaves = Arrays.copyOf(t.lightLeaves, t.ln_light);
         return t;
     }
 
@@ -66,7 +69,9 @@ public final class Tree64 {
                             }
                             mask |= 1L << bit;
                             if (mn == mb.length) mb = Arrays.copyOf(mb, mb.length * 2);
+                            if (mn >= mb.length) { mb = Arrays.copyOf(mb, mb.length * 2); lightLeaves = Arrays.copyOf(lightLeaves, lightLeaves.length * 2); }
                             mb[mn++] = m;
+                            lightLeaves[ln_light++] = vol.light[VoxelWorld.cellIndex(ox + x, y, oz + z)];
                         }
                     } else {
                         if (cs >= 16 && sectionsEmpty(x, y, z, cs)) continue;
