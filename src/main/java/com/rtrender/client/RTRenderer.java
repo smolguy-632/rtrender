@@ -223,7 +223,7 @@ public final class RTRenderer {
             if (scale < 0f) scale = (float) RTConfig.renderScale;
             if (!RTConfig.dynamicResolution) scale = (float) RTConfig.renderScale;
             int w = Math.max(64, (int) (dw * scale)), h = Math.max(48, (int) (dh * scale));
-            ensureBuffers(dw * dh);
+            ensureBuffers((long) w * h);
 
             // ---- parameter block
             Published p = current;
@@ -261,11 +261,11 @@ public final class RTRenderer {
     private int[] atlasSize = new int[]{1, 1};
     private boolean conventionLogged;
 
-    private void ensureBuffers(int pixels) {
+    private void ensureBuffers(long pixels) {
         if (pixels > bufPixels) {
-            colorBuf = ByteBuffer.allocateDirect(pixels * 4).order(ByteOrder.nativeOrder());
-            depthBuf = ByteBuffer.allocateDirect(pixels * 4).order(ByteOrder.nativeOrder());
-            bufPixels = pixels;
+            colorBuf = ByteBuffer.allocateDirect((int) (pixels * 4)).order(ByteOrder.nativeOrder());
+            depthBuf = ByteBuffer.allocateDirect((int) (pixels * 4)).order(ByteOrder.nativeOrder());
+            bufPixels = (int) pixels;
         }
     }
 

@@ -30,9 +30,8 @@ public final class RTEngine {
             need = Math.max(need, 64L);
             if (mem != null && need <= cap) return;
             if (mem != null) clReleaseMemObject(mem);
-            long c = need + (need >> 3);
-            mem = clCreateBuffer(ctx, flags, c, null, null);
-            cap = c;
+            mem = clCreateBuffer(ctx, flags, need, null, null);
+            cap = need;
         }
     }
 
