@@ -15,19 +15,19 @@ public final class Tree64 {
 
     private final VoxelWorld vol;
     private final int ox, oz;
-    private final int[] palFlags;
+    private final byte[] palFlags;
     private final long[][] lm = new long[4][];
     private final int[][] lp = new int[4][];
     private final int[] ln = new int[4];
     private short[] mb = new short[1 << 14];
     private int mn;
 
-    private Tree64(VoxelWorld vol, int ox, int oz, int[] palFlags) {
+    private Tree64(VoxelWorld vol, int ox, int oz, byte[] palFlags) {
         this.vol = vol; this.ox = ox; this.oz = oz; this.palFlags = palFlags;
         for (int i = 0; i < 4; i++) { lm[i] = new long[1 << 10]; lp[i] = new int[1 << 10]; }
     }
 
-    public static Tree64 build(VoxelWorld vol, int ox, int oz, int[] palFlags) {
+    public static Tree64 build(VoxelWorld vol, int ox, int oz, byte[] palFlags) {
         Tree64 t = new Tree64(vol, ox, oz, palFlags);
         boolean any = t.node(3, 0, 0, 0);
         if (!any) t.push(3, 0L, 0);

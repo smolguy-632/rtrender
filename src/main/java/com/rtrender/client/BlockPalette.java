@@ -37,16 +37,17 @@ public final class BlockPalette {
 
     private final IdentityHashMap<IBlockState, Integer> ids = new IdentityHashMap<IBlockState, Integer>();
     private int count = 1;
-    private int[] flags = new int[1024];
+    private byte[] flags = new byte[1024];
     private float[] uv = new float[1024 * 6 * 4];
     private int[] tint = new int[1024 * 6];
-    private float[] box = new float[1024 * 8];
+    private float[] box = new float[1024 * 6];
     private byte[] lightLevel = new byte[1024];
 
     /** Immutable copy for the worker thread / GPU upload. */
     public static final class Snapshot {
         public int count;
-        public int[] flags, tint;
+        public byte[] flags;
+        public int[] tint;
         public float[] uv, box;
         public byte[] lightLevel;
     }
@@ -63,7 +64,7 @@ public final class BlockPalette {
         s.flags = Arrays.copyOf(flags, count);
         s.tint = Arrays.copyOf(tint, count * 6);
         s.uv = Arrays.copyOf(uv, count * 24);
-        s.box = Arrays.copyOf(box, count * 8);
+        s.box = Arrays.copyOf(box, count * 6);
         s.lightLevel = Arrays.copyOf(lightLevel, count);
         return s;
     }
@@ -84,7 +85,7 @@ public final class BlockPalette {
             flags = Arrays.copyOf(flags, n);
             uv = Arrays.copyOf(uv, n * 24);
             tint = Arrays.copyOf(tint, n * 6);
-            box = Arrays.copyOf(box, n * 8);
+            box = Arrays.copyOf(box, n * 6);
             lightLevel = Arrays.copyOf(lightLevel, n);
         }
         int id = count++;
@@ -112,7 +113,7 @@ public final class BlockPalette {
                 setUV(id, f, sp);
                 tint[id * 6 + f] = lava ? 0 : (3 << 24);
             }
-            flags[id] = lava ? (F_OPAQUE | F_FULL | F_EMIT | F_SHADOW) : (F_WATER | F_FULL);
+            flags[id] = (byte) (lava ? (F_OPAQUE | F_FULL | F_EMIT | F_SHADOW) : (F_WATER | F_FULL));
             if (lava) lightLevel[id] = 15;
             return id;
         }
@@ -154,11 +155,11 @@ public final class BlockPalette {
             AxisAlignedBB bb = null;
             try { bb = st.getBoundingBox(w, pos); } catch (Throwable ignored) {}
             if (bb == null) bb = Block.FULL_BLOCK_AABB;
-            box[id * 8] = (float) bb.minX; box[id * 8 + 1] = (float) bb.minY; box[id * 8 + 2] = (float) bb.minZ;
-            box[id * 8 + 4] = (float) bb.maxX; box[id * 8 + 5] = (float) bb.maxY; box[id * 8 + 6] = (float) bb.maxZ;
+            box[id * 6] = (float) bb.minX; box[id * 6 + 1] = (float) bb.minY; box[id * 6 + 2] = (float) bb.minZ;
+            box[id * 6 + 3] = (float) bb.maxX; box[id * 6 + 4] = (float) bb.maxY; box[id * 6 + 5] = (float) bb.maxZ;
         }
         if (light > 0) fl |= F_EMIT;
-        flags[id] = fl;
+        flags[id] = (byte) fl;
         return id;
     }
 
