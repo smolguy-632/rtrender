@@ -126,7 +126,7 @@ inline int tr_advance(Tr* s, __global const ulong* masks)
 inline int tr_next(Tr* s, __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats,
                    int* vx, int* vy, int* vz, uint* mat, float* tin, int* axis_out)
 {
-    for (int it = 0; it < 2048; it++) {
+    for (int it = 0; it < 256; it++) {
         if (s->done) return 0;
         int bit = s->cx + s->cy * 4 + s->cz * 16;
         if ((s->m >> bit) & 1UL) {
