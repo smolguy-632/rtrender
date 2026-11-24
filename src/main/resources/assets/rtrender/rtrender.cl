@@ -42,10 +42,10 @@
 
 #define SA __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats, \
            __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint, \
-           __global const ushort* palBox, __global const uchar* light, __global const uint* colTint, \
+           __global const ushort* palBox, __global const uchar* lightLeaves, __global const uint* colTint, \
            __global const int* emHead, __global const int* emNext, __global const float4* emPos, \
            __global const uint* atlas, __global const float* P, __global const int* IP
-#define SP masks, ptrs, mats, palFlags, palUV, palTint, palBox, light, colTint, emHead, emNext, emPos, atlas, P, IP
+#define SP masks, ptrs, mats, palFlags, palUV, palTint, palBox, lightLeaves, colTint, emHead, emNext, emPos, atlas, P, IP
 
 // =====================================================================================================
 // sparse 64-tree resumable traversal
