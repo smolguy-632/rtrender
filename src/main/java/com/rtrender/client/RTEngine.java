@@ -17,7 +17,7 @@ public final class RTEngine {
     private final cl_command_queue queue;
     private final cl_program program;
     private final cl_kernel kernel;
-    private final Buf bMasks, bPtrs, bMats, bFlags, bUV, bTint, bBox, bLightLeaves, bCol, bEmHead, bEmNext, bEmPos,
+    private final Buf bMasks, bPtrs, bMats, bFlags, bUV, bTint, bBox, bCol, bEmHead, bEmNext, bEmPos,
             bAtlas, bP, bIP, bOutC, bOutD;
     private int atlasW, atlasH;
     private boolean hasScene, hasAtlas;
@@ -54,7 +54,7 @@ public final class RTEngine {
         kernel = clCreateKernel(program, "render", null);
         long ro = CL_MEM_READ_ONLY, rw = CL_MEM_READ_WRITE;
         bMasks = new Buf(ro); bPtrs = new Buf(ro); bMats = new Buf(ro); bFlags = new Buf(ro); bUV = new Buf(ro);
-        bTint = new Buf(ro); bBox = new Buf(ro); bLightLeaves = new Buf(ro); bCol = new Buf(ro); bEmHead = new Buf(ro);
+        bTint = new Buf(ro); bBox = new Buf(ro); bCol = new Buf(ro); bEmHead = new Buf(ro);
         bEmNext = new Buf(ro); bEmPos = new Buf(ro); bAtlas = new Buf(ro); bP = new Buf(ro); bIP = new Buf(ro);
         bOutC = new Buf(rw); bOutD = new Buf(rw);
     }
@@ -131,7 +131,6 @@ public final class RTEngine {
         short[] _bx = new short[ps.count * 6];
         for (int i = 0; i < _bx.length; i++) _bx[i] = (short) Math.round(ps.box[i] * 65535.0f);
         write(bBox, Pointer.to(_bx), 2L * _bx.length);
-        write(bLightLeaves, Pointer.to(t.lightLeaves), Math.max(1, t.lightLeaves.length));
         write(bCol, Pointer.to(p.colTint), 4L * p.colTint.length);
         Emitters e = p.emitters;
         write(bEmHead, Pointer.to(e.head), 4L * e.head.length);
@@ -152,7 +151,7 @@ public final class RTEngine {
         bOutC.ensure(4L * px); bOutD.ensure(4L * px);
         arg = 0;
         argMem(bMasks); argMem(bPtrs); argMem(bMats); argMem(bFlags); argMem(bUV); argMem(bTint); argMem(bBox);
-        argMem(bLightLeaves); argMem(bCol); argMem(bEmHead); argMem(bEmNext); argMem(bEmPos); argMem(bAtlas);
+        argMem(bCol); argMem(bEmHead); argMem(bEmNext); argMem(bEmPos); argMem(bAtlas);
         argMem(bP); argMem(bIP); argMem(bOutC); argMem(bOutD);
         clEnqueueNDRangeKernel(queue, kernel, 1, null, new long[]{px}, null, 0, null, null);
         color.position(0); depth.position(0);

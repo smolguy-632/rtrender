@@ -42,10 +42,10 @@
 
 #define SA __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats, \
            __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint, \
-           __global const ushort* palBox, __global const uchar* lightLeaves, __global const uint* colTint, \
+           __global const ushort* palBox, __global const uint* colTint, \
            __global const int* emHead, __global const int* emNext, __global const float4* emPos, \
            __global const uint* atlas, __global const float* P, __global const int* IP
-#define SP masks, ptrs, mats, palFlags, palUV, palTint, palBox, lightLeaves, colTint, emHead, emNext, emPos, atlas, P, IP
+#define SP masks, ptrs, mats, palFlags, palUV, palTint, palBox, colTint, emHead, emNext, emPos, atlas, P, IP
 
 // =====================================================================================================
 // sparse 64-tree resumable traversal
@@ -190,31 +190,11 @@ inline float4 sample_atlas(__global const uint* atlas, int aw, int ah, float4 r,
 }
 
 // Find the leaf index in the 64-tree for voxel (vx,vy,vz) (local coords), or -1 if air/empty.
-inline int find_leaf(__global const ulong* masks, __global const uint* ptrs, int vx, int vy, int vz)
-{
-    int node = 0, cs = 64, ox = 0, oy = 0, oz = 0;
-    for (int L = 3; L >= 0; L--) {
-        int cx = (vx - ox) / cs, cy = (vy - oy) / cs, cz = (vz - oz) / cs;
-        if (cx < 0 || cx > 3 || cy < 0 || cy > 3 || cz < 0 || cz > 3) return -1;
-        int bit = cx + cy * 4 + cz * 16;
-        if (!((masks[node] >> bit) & 1UL)) return -1;
-        int idx = (int)(ptrs[node] + popcount(masks[node] & ((1UL << bit) - 1UL)));
-        if (L == 0) return idx;
-        ox += cx * cs; oy += cy * cs; oz += cz * cs;
-        node = idx; cs >>= 2;
-    }
-    return -1;
-}
-
-inline uchar get_light(__global const ulong* masks, __global const uint* ptrs,
-                       __global const uchar* lightLeaves, int x, int y, int z, int ox, int oz)
+inline uchar get_light(int x, int y, int z, int ox, int oz)
 {
     if (y < 0) return (uchar)0;
-    if (y > 255) return (uchar)0xF0;
-    int lx = (x + ox) & 255, ly = y, lz = (z + oz) & 255;
-    int li = find_leaf(masks, ptrs, lx, ly, lz);
-    if (li < 0) return (uchar)0xF0;
-    return lightLeaves[li];
+    if (y > 255) return (uchar)0xFF;
+    return (uchar)0xF0;
 }
 
 // Does the ray really hit this voxel's geometry? (full cube: yes; partial block: bounding box; cutout: alpha test)
@@ -309,8 +289,8 @@ inline float3 shade(SA, float3 hp, int face, float3 base, uint id, int vx, int v
     if (fl & F_EMIT) return base * 1.15f;
     float3 n = face_normal(face);
     int ox = IP[2], oz = IP[3];
-    uchar la = get_light(masks, ptrs, lightLeaves, vx + (int)n.x, vy + (int)n.y, vz + (int)n.z, ox, oz);
-    uchar lb = get_light(masks, ptrs, lightLeaves, vx, vy, vz, ox, oz);
+    uchar la = get_light(vx + (int)n.x, vy + (int)n.y, vz + (int)n.z, ox, oz);
+    uchar lb = get_light(vx, vy, vz, ox, oz);
     float skyF = (float)(max((int)(la >> 4), (int)(lb >> 4))) * (1.0f / 15.0f);
     float blkF = (float)(max((int)(la & 15), (int)(lb & 15))) * (1.0f / 15.0f);
 
@@ -441,7 +421,7 @@ inline float3 wave_normal(float2 xz, float t, float amp)
 __kernel void render(
     __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats,
     __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint,
-    __global const ushort* palBox, __global const uchar* lightLeaves, __global const uint* colTint,
+    __global const ushort* palBox, __global const uint* colTint,
     __global const int* emHead, __global const int* emNext, __global const float4* emPos,
     __global const uint* atlas, __global const float* P, __global const int* IP,
     __global uint* outColor, __global float* outDepth)
