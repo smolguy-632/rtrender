@@ -124,9 +124,13 @@ public final class RTEngine {
         write(bMats, Pointer.to(t.mats), 2L * t.mats.length);
         BlockPalette.Snapshot ps = p.palette;
         write(bFlags, Pointer.to(ps.flags), 1L * ps.count);
-        write(bUV, Pointer.to(ps.uv), 4L * ps.count * 24);
+        short[] _uv = new short[ps.count * 24];
+        for (int i = 0; i < _uv.length; i++) _uv[i] = (short) Math.round(ps.uv[i] * 65535.0f);
+        write(bUV, Pointer.to(_uv), 2L * _uv.length);
         write(bTint, Pointer.to(ps.tint), 4L * ps.count * 6);
-        write(bBox, Pointer.to(ps.box), 4L * ps.count * 6);
+        short[] _bx = new short[ps.count * 6];
+        for (int i = 0; i < _bx.length; i++) _bx[i] = (short) Math.round(ps.box[i] * 65535.0f);
+        write(bBox, Pointer.to(_bx), 2L * _bx.length);
         write(bLight, Pointer.to(p.light), p.light.length);
         write(bCol, Pointer.to(p.colTint), 4L * p.colTint.length);
         Emitters e = p.emitters;

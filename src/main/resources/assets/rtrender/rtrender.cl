@@ -41,8 +41,8 @@
 // ---- int block IP: 0 w, 1 h, 2 originX, 3 originZ, 4 atlasW, 5 atlasH, 6 blockShadows ----
 
 #define SA __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats, \
-           __global const uchar* palFlags, __global const float4* palUV, __global const uint* palTint, \
-           __global const float* palBox, __global const uchar* light, __global const uint* colTint, \
+           __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint, \
+           __global const ushort* palBox, __global const uchar* light, __global const uint* colTint, \
            __global const int* emHead, __global const int* emNext, __global const float4* emPos, \
            __global const uint* atlas, __global const float* P, __global const int* IP
 #define SP masks, ptrs, mats, palFlags, palUV, palTint, palBox, light, colTint, emHead, emNext, emPos, atlas, P, IP
@@ -211,8 +211,8 @@ inline int eval_voxel(SA, float3 o, float3 d, int vx, int vy, int vz, int axis, 
             face = 2 * axis + (da > 0.0f ? 1 : 0);
         }
     } else {
-        float3 bmin = (float3)(palBox[id * 6], palBox[id * 6 + 1], palBox[id * 6 + 2]);
-        float3 bmax = (float3)(palBox[id * 6 + 3], palBox[id * 6 + 4], palBox[id * 6 + 5]);
+        float3 bmin = (float3)((float)palBox[id * 6] / 65535.0f, (float)palBox[id * 6 + 1] / 65535.0f, (float)palBox[id * 6 + 2] / 65535.0f);
+        float3 bmax = (float3)((float)palBox[id * 6 + 3] / 65535.0f, (float)palBox[id * 6 + 4] / 65535.0f, (float)palBox[id * 6 + 5] / 65535.0f);
         float3 ol = o - vo;
         float3 inv = 1.0f / ((float3)(fabs(d.x) < 1e-6f ? copysign(1e-6f, d.x) : d.x,
                                       fabs(d.y) < 1e-6f ? copysign(1e-6f, d.y) : d.y,
@@ -230,7 +230,10 @@ inline int eval_voxel(SA, float3 o, float3 d, int vx, int vy, int vz, int axis, 
     float3 hp = o + d * th;
     float3 fr = clamp(hp - vo, 0.0f, 1.0f);
     float u, v; face_uv(face, fr, &u, &v);
-    float4 tx = sample_atlas(atlas, IP[4], IP[5], palUV[id * 6 + face], u, v);
+    int _uvb = (id * 6 + face) * 4;
+    float4 _uvr = (float4)((float)palUV[_uvb] / 65535.0f, (float)palUV[_uvb + 1] / 65535.0f,
+                          (float)palUV[_uvb + 2] / 65535.0f, (float)palUV[_uvb + 3] / 65535.0f);
+    float4 tx = sample_atlas(atlas, IP[4], IP[5], _uvr, u, v);
     uint tt = palTint[id * 6 + face];
     uint tp = tt >> 24;
     if (tp != 0u) {
@@ -416,8 +419,8 @@ inline float3 wave_normal(float2 xz, float t, float amp)
 
 __kernel void render(
     __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats,
-    __global const uchar* palFlags, __global const float4* palUV, __global const uint* palTint,
-    __global const float* palBox, __global const uchar* light, __global const uint* colTint,
+    __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint,
+    __global const ushort* palBox, __global const uchar* light, __global const uint* colTint,
     __global const int* emHead, __global const int* emNext, __global const float4* emPos,
     __global const uint* atlas, __global const float* P, __global const int* IP,
     __global uint* outColor, __global float* outDepth)
