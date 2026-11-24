@@ -39,6 +39,7 @@
 #define P_SUNSHADOWS 55
 #define P_WATERREFL 56
 #define P_LIGHT 57
+#define P_HEATMAP 58
 // ---- int block IP: 0 w, 1 h, 2 originX, 3 originZ, 4 atlasW, 5 atlasH, 6 blockShadows ----
 
 #define SA __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats, \
@@ -262,6 +263,7 @@ inline float shadow_vis(SA, float3 o, float3 d, float maxT)
     float vis = 1.0f;
     int vx, vy, vz, axis; uint mat; float tin;
     while (tr_next(&s, masks, ptrs, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
+        r.steps++;
         uint id = mat & 0x7fffu;
         uint fl = palFlags[id];
         if (fl & F_WATER) { vis *= 0.9f; continue; }
@@ -347,7 +349,7 @@ inline float3 shade(SA, float3 hp, int face, float3 base, uint id, int vx, int v
     return base * fmax(lit, (float3)(0.03f, 0.03f, 0.035f));
 }
 
-typedef struct { float3 col; float alpha; float t; int water; float3 hp; float ts; float3 acc; float T; } Res;
+typedef struct { float3 col; float alpha; float t; int water; float3 hp; float ts; float3 acc; float T; int steps; } Res;
 
 // mode 0 primary (hands water surfaces back), 1 reflection (water = flat colour, sky on miss),
 // mode 2 refraction / underwater (water skipped, absorption applied)
@@ -355,7 +357,7 @@ inline Res trace_color(SA, float3 o, float3 d, float maxDist, int mode)
 {
     Res r;
     r.col = (float3)(0.0f); r.alpha = 0.0f; r.t = -1.0f; r.water = 0; r.hp = (float3)(0.0f); r.ts = 0.0f;
-    r.acc = (float3)(0.0f); r.T = 1.0f;
+    r.acc = (float3)(0.0f); r.T = 1.0f; r.steps = 0;
     float fogStart = P[P_FOGSTART], fogEnd = P[P_FOGEND];
     float3 fogc = vload3p(P, P_FOG);
     Tr s; tr_init(&s, masks, o, d, maxDist);
@@ -363,6 +365,7 @@ inline Res trace_color(SA, float3 o, float3 d, float maxDist, int mode)
     int first = 1, under = 0, nt = 0;
     int vx, vy, vz, axis; uint mat; float tin;
     while (tr_next(&s, masks, ptrs, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
+        r.steps++;
         uint id = mat & 0x7fffu;
         uint fl = palFlags[id];
         if (fl & F_WATER) {
@@ -457,6 +460,20 @@ __kernel void render(
 
     Res r = trace_color(SP, o, d, maxDist, 0);
     float3 col = r.col; float alpha = r.alpha; float tdepth = r.t;
+
+    // debug heatmap: colour by traversal step count (blue=few .. red=many)
+    if (P[P_HEATMAP] > 0.5f) {
+        float tt = clamp((float)r.steps / 64.0f, 0.0f, 1.0f);
+        float3 hc;
+        if (tt < 0.33f) hc = mix((float3)(0.0f,0.0f,1.0f), (float3)(0.0f,1.0f,0.0f), tt / 0.33f);
+        else if (tt < 0.66f) hc = mix((float3)(0.0f,1.0f,0.0f), (float3)(1.0f,1.0f,0.0f), (tt - 0.33f) / 0.33f);
+        else hc = mix((float3)(1.0f,1.0f,0.0f), (float3)(1.0f,0.0f,0.0f), (tt - 0.66f) / 0.34f);
+        hc = clamp(hc, 0.0f, 1.0f);
+        uint pr = (uint)(hc.x * 255.0f + 0.5f), pg = (uint)(hc.y * 255.0f + 0.5f), pbv = (uint)(hc.z * 255.0f + 0.5f);
+        outColor[gid] = pr | (pg << 8) | (pbv << 16) | (255u << 24);
+        outDepth[gid] = 1.0f;
+        return;
+    }
 
     // sky miss: no surface hit -> skip water handling and depth transform
     if (tdepth < 0.0f) {

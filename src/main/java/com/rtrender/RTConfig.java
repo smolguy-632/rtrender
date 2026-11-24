@@ -69,6 +69,9 @@ public class RTConfig {
     @Config.Comment("Account for vanilla block light levels (sky + block light). Off = fully lit surfaces (faster, less GPU work).")
     public static boolean accountForLight = true;
 
+    @Config.Comment("Render a heatmap of per-pixel ray traversal cost instead of the scene (blue=few steps .. red=many).")
+    public static boolean debugHeatmap = false;
+
     @Config.Comment("Log timings now and then.")
     public static boolean debugLog = false;
 }

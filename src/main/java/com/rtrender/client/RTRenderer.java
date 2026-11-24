@@ -257,6 +257,7 @@ public final class RTRenderer {
             P[52] = (float) RTConfig.waveStrength; P[53] = skyAmb; P[54] = (float) RTConfig.blockShadowDarkness;
             P[55] = RTConfig.sunShadows ? 1f : 0f; P[56] = RTConfig.waterReflections ? 1f : 0f;
             P[57] = RTConfig.accountForLight ? 1f : 0f;
+            P[58] = RTConfig.debugHeatmap ? 1f : 0f;
             int[] IP = {w, h, p.originX, p.originZ, 0, 0, RTConfig.blockLightShadows ? 1 : 0};
             IP[4] = atlasSize[0]; IP[5] = atlasSize[1];
 
