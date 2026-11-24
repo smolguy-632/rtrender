@@ -183,8 +183,19 @@ public final class RTRenderer {
             double[] inv = Mat4.invert(vp);
             if (inv == null) return;
 
+            // Which point is the origin of the space inverse(proj*modelview) returns? Vanilla bakes translate(0,-eyeHeight,0)
+            // into the modelview matrix (origin = feet), but do not assume it: inv(MV) * (0,0,0,1) is the camera position in that
+            // space, so in first person it is ~(0, eyeHeight, 0) when the origin is the feet and ~(0,0,0) when it is the eye.
+            double[] imv = Mat4.invert(mv);
+            double camRelY = imv != null ? imv[13] : 0.0;
+            boolean originIsFeet = mc.gameSettings.thirdPersonView != 0 || camRelY > 0.5 * view.getEyeHeight();
+            if (RTConfig.debugLog && !conventionLogged) {
+                conventionLogged = true;
+                LOG.info("modelview camera offset y = {} (eyeHeight {}) -> origin is {}", camRelY, view.getEyeHeight(),
+                        originIsFeet ? "FEET" : "EYE");
+            }
             double ex = view.lastTickPosX + (view.posX - view.lastTickPosX) * pt;
-            double ey = view.lastTickPosY + (view.posY - view.lastTickPosY) * pt + view.getEyeHeight();
+            double ey = view.lastTickPosY + (view.posY - view.lastTickPosY) * pt + (originIsFeet ? 0.0 : view.getEyeHeight());
             double ez = view.lastTickPosZ + (view.posZ - view.lastTickPosZ) * pt;
 
             // ---- sun / moon / sky
@@ -248,6 +259,7 @@ public final class RTRenderer {
     }
 
     private int[] atlasSize = new int[]{1, 1};
+    private boolean conventionLogged;
 
     private void ensureBuffers(int pixels) {
         if (pixels > bufPixels) {
