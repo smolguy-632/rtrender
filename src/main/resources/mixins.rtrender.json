@@ -1,0 +1,12 @@
+{
+  "package": "com.rtrender.mixin",
+  "refmap": "mixins.rtrender.refmap.json",
+  "target": "@env(DEFAULT)",
+  "minVersion": "0.8",
+  "compatibilityLevel": "JAVA_8",
+  "priority": 2500,
+  "mixins": [],
+  "client": ["MixinRenderGlobal"],
+  "server": [],
+  "injectors": { "defaultRequire": 1 }
+}

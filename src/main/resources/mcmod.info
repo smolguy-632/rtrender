@@ -1,7 +1,7 @@
 [{
   "modid": "${modid}",
   "name": "${modname}",
-  "description": "GPU (OpenCL) voxel ray traced global illumination: sparse 64-tree + Amanatides&Woo DDA, 1 mirror ray per surface voxel, inverse-square falloff, refreshed every N ticks. Client only. Works with Celeritas.",
+  "description": "Real-time OpenCL voxel ray tracer that replaces the terrain renderer (vanilla and Celeritas): primary rays per pixel, ray traced sun / light block shadows, water reflection + refraction. Client only.",
   "version": "${version}",
   "mcversion": "${mcversion}",
   "authorList": ["you"],
