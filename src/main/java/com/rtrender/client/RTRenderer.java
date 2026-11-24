@@ -66,6 +66,12 @@ public final class RTRenderer {
     private boolean everPublished;
     private float scale = -1f;
     private long frameCounter;
+    private double[] cachedVp, cachedInv;
+    // cached sky/fog/celestial (refreshed when world time advances by >= 1 tick)
+    private double cachedTime = -1;
+    private float cachedSunY, cachedSunX, cachedRain, cachedDayF, cachedNightF, cachedSkyAmb;
+    private Vec3d cachedZen, cachedFog;
+    private float[] cachedSdir, cachedScol;
 
     private ByteBuffer colorBuf, depthBuf;
     private int bufPixels;
@@ -179,9 +185,12 @@ public final class RTRenderer {
         if (view == null || current == null) return;
         try {
             double[] proj = readMatrix(GL11.GL_PROJECTION_MATRIX), mv = readMatrix(GL11.GL_MODELVIEW_MATRIX);
+            // cache the inverse when matrices are unchanged (avoids a 4x4 invert per frame)
             double[] vp = Mat4.mul(proj, mv);
-            double[] inv = Mat4.invert(vp);
-            if (inv == null) return;
+            double[] inv = cachedInv;
+            boolean same = cachedVp != null && cachedVp.length == vp.length;
+            if (same) for (int i = 0; i < vp.length; i++) if (cachedVp[i] != vp[i]) { same = false; break; }
+            if (!same) { inv = Mat4.invert(vp); if (inv == null) return; cachedVp = vp; cachedInv = inv; }
 
             // Which point is the origin of the space inverse(proj*modelview) returns? Vanilla bakes translate(0,-eyeHeight,0)
             // into the modelview matrix (origin = feet), but do not assume it: inv(MV) * (0,0,0,1) is the camera position in that
@@ -198,25 +207,32 @@ public final class RTRenderer {
             double ey = view.lastTickPosY + (view.posY - view.lastTickPosY) * pt + (originIsFeet ? 0.0 : view.getEyeHeight());
             double ez = view.lastTickPosZ + (view.posZ - view.lastTickPosZ) * pt;
 
-            // ---- sun / moon / sky
-            float ang = world.getCelestialAngle(pt) * (float) (Math.PI * 2.0);
-            float sunY = (float) Math.cos(ang), sunX = -(float) Math.sin(ang);
-            float rain = world.getRainStrength(pt);
-            float dayF = smooth(-0.05f, 0.25f, sunY);
-            float nightF = smooth(0.0f, 0.25f, -sunY);
-            float[] sdir, scol = new float[3];
-            if (sunY > -0.04f) {
-                sdir = new float[]{sunX, sunY, 0f};
-                float warm = smooth(0.0f, 0.4f, sunY);
-                float k = (float) RTConfig.sunStrength * dayF * (1f - 0.85f * rain);
-                scol[0] = k * (1.0f); scol[1] = k * (0.55f + 0.40f * warm); scol[2] = k * (0.30f + 0.55f * warm);
-            } else {
-                sdir = new float[]{-sunX, -sunY, 0f};
-                float k = 0.55f * nightF * (1f - 0.8f * rain);
-                scol[0] = 0.30f * k; scol[1] = 0.38f * k; scol[2] = 0.62f * k;
+            // ---- sun / moon / sky (cached: sky/fog/celestial change slowly)
+            double nowT = world.getTotalWorldTime() + pt;
+            if (nowT != cachedTime) {
+                cachedTime = nowT;
+                float ang = world.getCelestialAngle(pt) * (float) (Math.PI * 2.0);
+                cachedSunY = (float) Math.cos(ang); cachedSunX = -(float) Math.sin(ang);
+                cachedRain = world.getRainStrength(pt);
+                cachedDayF = smooth(-0.05f, 0.25f, cachedSunY);
+                cachedNightF = smooth(0.0f, 0.25f, -cachedSunY);
+                if (cachedSunY > -0.04f) {
+                    cachedSdir = new float[]{cachedSunX, cachedSunY, 0f};
+                    float warm = smooth(0.0f, 0.4f, cachedSunY);
+                    float k = (float) RTConfig.sunStrength * cachedDayF * (1f - 0.85f * cachedRain);
+                    cachedScol = new float[]{k * 1.0f, k * (0.55f + 0.40f * warm), k * (0.30f + 0.55f * warm)};
+                } else {
+                    cachedSdir = new float[]{-cachedSunX, -cachedSunY, 0f};
+                    float k = 0.55f * cachedNightF * (1f - 0.8f * cachedRain);
+                    cachedScol = new float[]{0.30f * k, 0.38f * k, 0.62f * k};
+                }
+                cachedSkyAmb = (0.16f + (0.70f - 0.16f) * cachedDayF) * (1f - 0.3f * cachedRain);
+                cachedZen = world.getSkyColor(view, pt); cachedFog = world.getFogColor(pt);
             }
-            float skyAmb = (0.16f + (0.70f - 0.16f) * dayF) * (1f - 0.3f * rain);
-            Vec3d zen = world.getSkyColor(view, pt), fog = world.getFogColor(pt);
+            float sunY = cachedSunY, sunX = cachedSunX, rain = cachedRain, dayF = cachedDayF, nightF = cachedNightF;
+            float[] sdir = cachedSdir, scol = cachedScol;
+            float skyAmb = cachedSkyAmb;
+            Vec3d zen = cachedZen, fog = cachedFog;
 
             // ---- resolution
             int dw = mc.displayWidth, dh = mc.displayHeight;
