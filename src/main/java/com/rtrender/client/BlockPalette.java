@@ -55,7 +55,7 @@ public final class BlockPalette {
     public synchronized void clear() {
         ids.clear();
         count = 1;
-        Arrays.fill(flags, 0);
+        Arrays.fill(flags, (byte) 0);
     }
 
     public synchronized Snapshot snapshot() {
