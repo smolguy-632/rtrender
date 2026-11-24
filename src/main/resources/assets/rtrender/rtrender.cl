@@ -38,6 +38,7 @@
 #define P_BLKDARK 54
 #define P_SUNSHADOWS 55
 #define P_WATERREFL 56
+#define P_LIGHT 57
 // ---- int block IP: 0 w, 1 h, 2 originX, 3 originZ, 4 atlasW, 5 atlasH, 6 blockShadows ----
 
 #define SA __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats, \
@@ -289,8 +290,13 @@ inline float3 shade(SA, float3 hp, int face, float3 base, uint id, int vx, int v
     if (fl & F_EMIT) return base * 1.15f;
     float3 n = face_normal(face);
     int ox = IP[2], oz = IP[3];
-    uchar la = get_light(vx + (int)n.x, vy + (int)n.y, vz + (int)n.z, ox, oz);
-    uchar lb = get_light(vx, vy, vz, ox, oz);
+    uchar la, lb;
+    if (P[P_LIGHT] > 0.5f) {
+        la = get_light(vx + (int)n.x, vy + (int)n.y, vz + (int)n.z, ox, oz);
+        lb = get_light(vx, vy, vz, ox, oz);
+    } else {
+        la = (uchar)0xF0; lb = (uchar)0xF0;
+    }
     float skyF = (float)(max((int)(la >> 4), (int)(lb >> 4))) * (1.0f / 15.0f);
     float blkF = (float)(max((int)(la & 15), (int)(lb & 15))) * (1.0f / 15.0f);
 

@@ -66,6 +66,9 @@ public class RTConfig {
     @Config.Comment("Ignore Microsoft D3D12 OpenCL emulation devices.")
     public static boolean skipD3D12Devices = true;
 
+    @Config.Comment("Account for vanilla block light levels (sky + block light). Off = fully lit surfaces (faster, less GPU work).")
+    public static boolean accountForLight = true;
+
     @Config.Comment("Log timings now and then.")
     public static boolean debugLog = false;
 }
