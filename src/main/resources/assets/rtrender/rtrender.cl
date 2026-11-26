@@ -263,7 +263,6 @@ inline float shadow_vis(SA, float3 o, float3 d, float maxT)
     float vis = 1.0f;
     int vx, vy, vz, axis; uint mat; float tin;
     while (tr_next(&s, masks, ptrs, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
-        r.steps++;
         uint id = mat & 0x7fffu;
         uint fl = palFlags[id];
         if (fl & F_WATER) { vis *= 0.9f; continue; }
