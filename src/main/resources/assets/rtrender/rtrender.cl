@@ -46,7 +46,7 @@
            __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint, \
            __global const ushort* palBox, __global const uint* colTint, \
            __global const int* emHead, __global const int* emNext, __global const float4* emPos, \
-           __global const uint* atlas, __constant float* P, __global const int* IP
+           __global const uint* atlas, __global const float* P, __global const int* IP
 #define SP masks, ptrs, mats, palFlags, palUV, palTint, palBox, colTint, emHead, emNext, emPos, atlas, P, IP
 
 // =====================================================================================================
@@ -62,7 +62,6 @@ typedef struct {
     int s_node[LEVELS], s_cx[LEVELS], s_cy[LEVELS], s_cz[LEVELS];
     int s_ox[LEVELS], s_oy[LEVELS], s_oz[LEVELS];
     float s_tx[LEVELS], s_ty[LEVELS], s_tz[LEVELS];
-    float stepX, stepY, stepZ;
     int axis;
     int done;
 } Tr;
@@ -92,7 +91,6 @@ inline void tr_init(Tr* s, __global const ulong* masks, float3 o, float3 d, floa
     s->t_end = fmin(fmin(tf.x, tf.y), fmin(tf.z, max_t));
     s->done = (s->t >= s->t_end);
     s->level = LEVELS - 1; s->cs = 64; s->node = 0; s->ox = 0; s->oy = 0; s->oz = 0;
-    s->stepX = s->cs * s->ainv.x; s->stepY = s->cs * s->ainv.y; s->stepZ = s->cs * s->ainv.z;
     s->m = masks[0];
     s->axis = -1;
     if (tmin > 0.0f) s->axis = (tn.x >= tn.y && tn.x >= tn.z) ? 0 : ((tn.y >= tn.z) ? 1 : 2);
@@ -108,20 +106,19 @@ inline int tr_advance(Tr* s, __global const ulong* masks)
     if (s->t >= s->t_end) return 0;
     s->axis = axis;
     int out;
-    if (axis == 0)      { s->cx += s->sx; s->tx += s->stepX; out = (s->cx < 0 || s->cx > 3); }
-    else if (axis == 1) { s->cy += s->sy; s->ty += s->stepY; out = (s->cy < 0 || s->cy > 3); }
-    else                { s->cz += s->sz; s->tz += s->stepZ; out = (s->cz < 0 || s->cz > 3); }
+    if (axis == 0)      { s->cx += s->sx; s->tx += s->cs * s->ainv.x; out = (s->cx < 0 || s->cx > 3); }
+    else if (axis == 1) { s->cy += s->sy; s->ty += s->cs * s->ainv.y; out = (s->cy < 0 || s->cy > 3); }
+    else                { s->cz += s->sz; s->tz += s->cs * s->ainv.z; out = (s->cz < 0 || s->cz > 3); }
     while (out) {
         if (s->level == LEVELS - 1) return 0;
         int l = ++s->level; s->cs <<= 2;
-        s->stepX = s->cs * s->ainv.x; s->stepY = s->cs * s->ainv.y; s->stepZ = s->cs * s->ainv.z;
         s->node = s->s_node[l]; s->m = masks[s->node];
         s->cx = s->s_cx[l]; s->cy = s->s_cy[l]; s->cz = s->s_cz[l];
         s->ox = s->s_ox[l]; s->oy = s->s_oy[l]; s->oz = s->s_oz[l];
         s->tx = s->s_tx[l]; s->ty = s->s_ty[l]; s->tz = s->s_tz[l];
-        if (axis == 0)      { s->cx += s->sx; s->tx += s->stepX; out = (s->cx < 0 || s->cx > 3); }
-        else if (axis == 1) { s->cy += s->sy; s->ty += s->stepY; out = (s->cy < 0 || s->cy > 3); }
-        else                { s->cz += s->sz; s->tz += s->stepZ; out = (s->cz < 0 || s->cz > 3); }
+        if (axis == 0)      { s->cx += s->sx; s->tx += s->cs * s->ainv.x; out = (s->cx < 0 || s->cx > 3); }
+        else if (axis == 1) { s->cy += s->sy; s->ty += s->cs * s->ainv.y; out = (s->cy < 0 || s->cy > 3); }
+        else                { s->cz += s->sz; s->tz += s->cs * s->ainv.z; out = (s->cz < 0 || s->cz > 3); }
     }
     return 1;
 }
@@ -160,7 +157,7 @@ inline int tr_next(Tr* s, __global const ulong* masks, __global const uint* ptrs
 // =====================================================================================================
 // helpers
 // =====================================================================================================
-inline float3 vload3p(__constant float* P, int i) { return (float3)(P[i], P[i + 1], P[i + 2]); }
+inline float3 vload3p(__global const float* P, int i) { return (float3)(P[i], P[i + 1], P[i + 2]); }
 
 inline float3 face_normal(int f)
 {
@@ -277,7 +274,7 @@ inline float shadow_vis(SA, float3 o, float3 d, float maxT)
     return vis;
 }
 
-inline float3 sky_color(__constant float* P, float3 d)
+inline float3 sky_color(__global const float* P, float3 d)
 {
     float3 zen = vload3p(P, P_ZENITH), fogc = vload3p(P, P_FOG);
     float h = clamp(d.y, 0.0f, 1.0f);
@@ -434,7 +431,7 @@ __kernel void render(
     __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint,
     __global const ushort* palBox, __global const uint* colTint,
     __global const int* emHead, __global const int* emNext, __global const float4* emPos,
-    __global const uint* atlas, __constant float* P, __global const int* IP,
+    __global const uint* atlas, __global const float* P, __global const int* IP,
     __global uint* outColor, __global float* outDepth)
 {
     int gid = get_global_id(0);
