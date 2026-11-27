@@ -45,6 +45,7 @@ public final class RTRenderer {
         public byte[] light;          // live array (benign tearing)
         public int[] colTint;
         public int originX, originZ;
+        public int topY;             // exclusive top (multiple of 16) of the highest non-empty section; nothing is occupied above it
     }
 
     private static final Logger LOG = LogManager.getLogger("RTRender");
@@ -114,10 +115,13 @@ public final class RTRenderer {
             public void run() {
                 try {
                     long t0 = System.nanoTime();
+                    int topBefore = topOccupiedY(ox, oz);
                     Published p = new Published();
                     p.tree = Tree64.build(vol, ox, oz, ps.flags, RTConfig.accountForLight);
                     p.emitters = Emitters.collect(vol, ox, oz, ps);
                     p.palette = ps; p.light = vol.light; p.colTint = col; p.originX = ox; p.originZ = oz;
+                    // read before and after the build and keep the larger value: blocks placed meanwhile can only raise it
+                    p.topY = Math.max(topBefore, topOccupiedY(ox, oz));
                     pending.set(p);
                     everPublished = true;
                     if (RTConfig.debugLog)
@@ -258,6 +262,7 @@ public final class RTRenderer {
             P[55] = RTConfig.sunShadows ? 1f : 0f; P[56] = RTConfig.waterReflections ? 1f : 0f;
             P[57] = RTConfig.accountForLight ? 1f : 0f;
             P[58] = RTConfig.debugHeatmap ? 1f : 0f;
+            P[59] = p.topY + 0.01f;
             int[] IP = {w, h, p.originX, p.originZ, 0, 0, RTConfig.blockLightShadows ? 1 : 0};
             IP[4] = atlasSize[0]; IP[5] = atlasSize[1];
 
@@ -274,6 +279,15 @@ public final class RTRenderer {
             LOG.error("RT Renderer frame failed, disabling", t);
             failed = true;
         }
+    }
+
+    /** Exclusive top y (multiple of 16) of the highest section holding any block, for window origin (ox, oz). */
+    private int topOccupiedY(int ox, int oz) {
+        int top = 0;
+        for (int sx = 0; sx < 16; sx++) for (int sz = 0; sz < 16; sz++)
+            for (int sy = 15; sy >= top; sy--)
+                if (vol.sectionCount[VoxelWorld.secIndex(ox + sx * 16, sy * 16, oz + sz * 16)] != 0) { top = sy + 1; break; }
+        return top * 16;
     }
 
     private int[] atlasSize = new int[]{1, 1};

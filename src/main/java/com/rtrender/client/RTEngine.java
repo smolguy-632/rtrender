@@ -153,7 +153,9 @@ public final class RTEngine {
         argMem(bMasks); argMem(bPtrs); argMem(bMats); argMem(bFlags); argMem(bUV); argMem(bTint); argMem(bBox);
         argMem(bCol); argMem(bEmHead); argMem(bEmNext); argMem(bEmPos); argMem(bAtlas);
         argMem(bP); argMem(bIP); argMem(bOutC); argMem(bOutD);
-        clEnqueueNDRangeKernel(queue, kernel, 1, null, new long[]{px}, null, 0, null, null);
+        // the kernel maps work items to 8x8 pixel tiles (coherent rays); partial edge tiles are masked off in the kernel
+        long tiles = (long) ((w + 7) >> 3) * ((h + 7) >> 3);
+        clEnqueueNDRangeKernel(queue, kernel, 1, null, new long[]{tiles * 64L}, null, 0, null, null);
         color.position(0); depth.position(0);
         clEnqueueReadBuffer(queue, bOutC.mem, true, 0, 4L * px, Pointer.to(color), 0, null, null);
         clEnqueueReadBuffer(queue, bOutD.mem, true, 0, 4L * px, Pointer.to(depth), 0, null, null);

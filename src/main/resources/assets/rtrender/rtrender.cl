@@ -40,6 +40,7 @@
 #define P_WATERREFL 56
 #define P_LIGHT 57
 #define P_HEATMAP 58
+#define P_YTOP 59       // exclusive top of the highest occupied 16-block section (window-local y)
 // ---- int block IP: 0 w, 1 h, 2 originX, 3 originZ, 4 atlasW, 5 atlasH, 6 blockShadows ----
 
 #define SA __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats, \
@@ -60,7 +61,6 @@ typedef struct {
     float tx, ty, tz;
     ulong m;
     int s_node[LEVELS], s_cx[LEVELS], s_cy[LEVELS], s_cz[LEVELS];
-    int s_ox[LEVELS], s_oy[LEVELS], s_oz[LEVELS];
     float s_tx[LEVELS], s_ty[LEVELS], s_tz[LEVELS];
     int axis;
     int done;
@@ -69,15 +69,16 @@ typedef struct {
 inline void tr_cell(Tr* s)
 {
     float3 p = s->o + s->d * s->t;
-    s->cx = clamp((int)floor((p.x - s->ox) / s->cs), 0, 3);
-    s->cy = clamp((int)floor((p.y - s->oy) / s->cs), 0, 3);
-    s->cz = clamp((int)floor((p.z - s->oz) / s->cs), 0, 3);
+    float rcs = 1.0f / (float)s->cs;     // cs is a power of two -> exact reciprocal, same result as the division
+    s->cx = clamp((int)floor((p.x - (float)s->ox) * rcs), 0, 3);
+    s->cy = clamp((int)floor((p.y - (float)s->oy) * rcs), 0, 3);
+    s->cz = clamp((int)floor((p.z - (float)s->oz) * rcs), 0, 3);
     s->tx = (s->ox + (s->cx + (s->sx > 0)) * s->cs - s->o.x) * s->inv.x;
     s->ty = (s->oy + (s->cy + (s->sy > 0)) * s->cs - s->o.y) * s->inv.y;
     s->tz = (s->oz + (s->cz + (s->sz > 0)) * s->cs - s->o.z) * s->inv.z;
 }
 
-inline void tr_init(Tr* s, __global const ulong* masks, float3 o, float3 d, float max_t)
+inline void tr_init(Tr* s, __global const ulong* masks, float3 o, float3 d, float max_t, float ytop)
 {
     if (fabs(d.x) < 1e-6f) d.x = copysign(1e-6f, d.x);
     if (fabs(d.y) < 1e-6f) d.y = copysign(1e-6f, d.y);
@@ -89,6 +90,8 @@ inline void tr_init(Tr* s, __global const ulong* masks, float3 o, float3 d, floa
     float tmin = fmax(fmax(tn.x, tn.y), tn.z);
     s->t = fmax(tmin, 0.0f);
     s->t_end = fmin(fmin(tf.x, tf.y), fmin(tf.z, max_t));
+    // nothing is occupied above ytop: an upward ray can stop as soon as it climbs past it (exact, saves the empty-sky walk)
+    if (d.y > 0.0f) s->t_end = fmin(s->t_end, (ytop - o.y) * s->inv.y);
     s->done = (s->t >= s->t_end);
     s->level = LEVELS - 1; s->cs = 64; s->node = 0; s->ox = 0; s->oy = 0; s->oz = 0;
     s->m = masks[0];
@@ -113,8 +116,8 @@ inline int tr_advance(Tr* s, __global const ulong* masks)
         if (s->level == LEVELS - 1) return 0;
         int l = ++s->level; s->cs <<= 2;
         s->node = s->s_node[l]; s->m = masks[s->node];
+        s->ox -= s->s_cx[l] * s->cs; s->oy -= s->s_cy[l] * s->cs; s->oz -= s->s_cz[l] * s->cs;
         s->cx = s->s_cx[l]; s->cy = s->s_cy[l]; s->cz = s->s_cz[l];
-        s->ox = s->s_ox[l]; s->oy = s->s_oy[l]; s->oz = s->s_oz[l];
         s->tx = s->s_tx[l]; s->ty = s->s_ty[l]; s->tz = s->s_tz[l];
         if (axis == 0)      { s->cx += s->sx; s->tx += s->cs * s->ainv.x; out = (s->cx < 0 || s->cx > 3); }
         else if (axis == 1) { s->cy += s->sy; s->ty += s->cs * s->ainv.y; out = (s->cy < 0 || s->cy > 3); }
@@ -141,7 +144,6 @@ inline int tr_next(Tr* s, __global const ulong* masks, __global const uint* ptrs
             }
             int l = s->level;
             s->s_node[l] = s->node; s->s_cx[l] = s->cx; s->s_cy[l] = s->cy; s->s_cz[l] = s->cz;
-            s->s_ox[l] = s->ox; s->s_oy[l] = s->oy; s->s_oz[l] = s->oz;
             s->s_tx[l] = s->tx; s->s_ty[l] = s->ty; s->s_tz[l] = s->tz;
             s->ox += s->cx * s->cs; s->oy += s->cy * s->cs; s->oz += s->cz * s->cs;
             s->level--; s->cs >>= 2; s->node = (int)c; s->m = masks[s->node];
@@ -259,7 +261,7 @@ inline int eval_voxel(SA, float3 o, float3 d, int vx, int vy, int vz, int axis, 
 // any-hit visibility test (1 = unobstructed). Translucent blocks only dim the light.
 inline float shadow_vis(SA, float3 o, float3 d, float maxT)
 {
-    Tr s; tr_init(&s, masks, o, d, maxT);
+    Tr s; tr_init(&s, masks, o, d, maxT, P[P_YTOP]);
     float vis = 1.0f;
     int vx, vy, vz, axis; uint mat; float tin;
     while (tr_next(&s, masks, ptrs, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
@@ -268,6 +270,7 @@ inline float shadow_vis(SA, float3 o, float3 d, float maxT)
         if (fl & F_WATER) { vis *= 0.9f; continue; }
         if (fl & F_TRANSL) { vis *= 0.8f; continue; }
         if (!(fl & F_SHADOW)) continue;
+        if ((fl & F_FULL) && !(fl & F_CUTOUT)) return 0.0f;      // eval_voxel would always hit: skip the atlas fetch
         float th; int face; float4 tex;
         if (eval_voxel(SP, o, d, vx, vy, vz, axis, tin, id, &th, &face, &tex)) return 0.0f;
     }
@@ -359,7 +362,7 @@ inline Res trace_color(SA, float3 o, float3 d, float maxDist, int mode)
     r.acc = (float3)(0.0f); r.T = 1.0f; r.steps = 0;
     float fogStart = P[P_FOGSTART], fogEnd = P[P_FOGEND];
     float3 fogc = vload3p(P, P_FOG);
-    Tr s; tr_init(&s, masks, o, d, maxDist);
+    Tr s; tr_init(&s, masks, o, d, maxDist, P[P_YTOP]);
     float3 acc = (float3)(0.0f); float T = 1.0f;
     int first = 1, under = 0, nt = 0;
     int vx, vy, vz, axis; uint mat; float tin;
@@ -434,10 +437,16 @@ __kernel void render(
     __global const uint* atlas, __global const float* P, __global const int* IP,
     __global uint* outColor, __global float* outDepth)
 {
+    // 8x8 pixel tiles: neighbouring lanes trace neighbouring pixels -> far less divergence / better cache hits than
+    // a 1-D row-major mapping. Host launches tilesX*tilesY*64 work items (see RTEngine.render).
     int gid = get_global_id(0);
     int w = IP[0], h = IP[1];
-    if (gid >= w * h) return;
-    int px = gid % w, py = gid / w;
+    int tilesX = (w + 7) >> 3;
+    int tile = gid >> 6, inT = gid & 63;
+    int px = ((tile % tilesX) << 3) + (inT & 7);
+    int py = ((tile / tilesX) << 3) + (inT >> 3);
+    if (px >= w || py >= h) return;
+    gid = py * w + px;                     // output index stays row-major
     float nx = ((float)px + 0.5f) / (float)w * 2.0f - 1.0f;
     float ny = ((float)py + 0.5f) / (float)h * 2.0f - 1.0f;
 
