@@ -25,6 +25,7 @@ public final class GIVolume {
     private static final int BYTES = CELLS * 4;
     /** Texture unit the GI sampler is bound to (unit 0 keeps the block atlas). */
     public static final int UNIT = 15;
+    public static final GIVolume INSTANCE = new GIVolume();
 
     /** Blocks per cell - chosen so the volume always spans the render distance. */
     public int cell = 4;
@@ -134,20 +135,20 @@ public final class GIVolume {
         if (tex == 0) return;
         int prev = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
         GL13.glActiveTexture(GL13.GL_TEXTURE0 + UNIT);
-        GL11.glBindTexture(GL11.GL_TEXTURE_3D, tex);
+        GL11.glBindTexture(GL12.GL_TEXTURE_3D, tex);
         GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
-        GL12.glTexImage3D(GL11.GL_TEXTURE_3D, 0, GL11.GL_RGBA8, DIM, DIM, DIM, 0,
+        GL12.glTexImage3D(GL12.GL_TEXTURE_3D, 0, GL11.GL_RGBA8, DIM, DIM, DIM, 0,
                 GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_3D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_3D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_3D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_3D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glTexParameteri(GL11.GL_TEXTURE_3D, GL11.GL_TEXTURE_WRAP_R, GL12.GL_CLAMP_TO_EDGE);
-        GL11.glBindTexture(GL11.GL_TEXTURE_3D, 0);
+        GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+        GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
+        GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL12.GL_TEXTURE_WRAP_R, GL12.GL_CLAMP_TO_EDGE);
+        GL11.glBindTexture(GL12.GL_TEXTURE_3D, 0);
         GL13.glActiveTexture(prev);
         // push the freshly filled buffer so the very first frame is not undefined
         cpu.clear();
-        GL12.glTexSubImage3D(GL11.GL_TEXTURE_3D, 0, 0, 0, 0, DIM, DIM, DIM,
+        GL12.glTexSubImage3D(GL12.GL_TEXTURE_3D, 0, 0, 0, 0, DIM, DIM, DIM,
                 GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, cpu);
         cpu.clear();
     }
@@ -157,13 +158,13 @@ public final class GIVolume {
         if (tex == 0 || zTo <= zFrom) return;
         int prev = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
         GL13.glActiveTexture(GL13.GL_TEXTURE0 + UNIT);
-        GL11.glBindTexture(GL11.GL_TEXTURE_3D, tex);
+        GL11.glBindTexture(GL12.GL_TEXTURE_3D, tex);
         cpu.clear();
         cpu.position(zFrom * DIM * DIM * 4);
-        GL12.glTexSubImage3D(GL11.GL_TEXTURE_3D, 0, 0, 0, zFrom, DIM, DIM, zTo - zFrom,
+        GL12.glTexSubImage3D(GL12.GL_TEXTURE_3D, 0, 0, 0, zFrom, DIM, DIM, zTo - zFrom,
                 GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, cpu);
         cpu.clear();
-        GL11.glBindTexture(GL11.GL_TEXTURE_3D, 0);
+        GL11.glBindTexture(GL12.GL_TEXTURE_3D, 0);
         GL13.glActiveTexture(prev);
     }
 
@@ -179,7 +180,7 @@ public final class GIVolume {
         if (locTex < 0) return;
         int prev = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
         GL13.glActiveTexture(GL13.GL_TEXTURE0 + UNIT);
-        GL11.glBindTexture(GL11.GL_TEXTURE_3D, tex);
+        GL11.glBindTexture(GL12.GL_TEXTURE_3D, tex);
         GL13.glActiveTexture(prev);
         GL20.glUniform1i(locTex, UNIT);
         if (locOrigin >= 0)
