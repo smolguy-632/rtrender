@@ -2,7 +2,8 @@ package com.rtrender.mixin;
 
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.ModifyVariable;
+import org.spongepowered.asm.mixin.injection.invoke.arg.Args;
+import org.spongepowered.asm.mixin.injection.ModifyArgs;
 
 /**
  * Patches Celeritas' terrain vertex shader so the per-vertex lightmap multiply becomes a mix between the
@@ -11,9 +12,12 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
  */
 @Mixin(targets = "org.embeddedt.embeddium.impl.gl.shader.GlShader", remap = false)
 public abstract class MixinGlShader {
-    @ModifyVariable(method = "<init>", at = @At("HEAD"), argsOnly = true, ordinal = 2)
-    private static String rtrender$patch(String source) {
-        if (source == null || !source.contains("_sample_lightmap")) return source;
+    @ModifyArgs(method = "<init>", at = @At("HEAD"))
+    private void rtrender$patch(Args args) {
+        Object src = args.get(2);
+        if (!(src instanceof String)) return;
+        String source = (String) src;
+        if (!source.contains("_sample_lightmap")) return;
         String uniforms = "uniform sampler3D u_GIVol;\nuniform vec4 u_GIOrigin;\nuniform float u_GIStrength;\n\n";
         int mi = source.indexOf("void main()");
         if (mi >= 0 && !source.contains("uniform sampler3D u_GIVol;"))
@@ -31,6 +35,6 @@ public abstract class MixinGlShader {
                     "    lightColor.rgb = mix(lightColor.rgb, _gi, u_GIStrength);\n" +
                     "    v_Color = _vert_color * lightColor;");
         }
-        return source;
+        args.set(2, source);
     }
 }
