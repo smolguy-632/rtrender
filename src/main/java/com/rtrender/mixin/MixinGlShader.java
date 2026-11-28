@@ -1,5 +1,7 @@
 package com.rtrender.mixin;
 
+import org.embeddedt.embeddium.impl.gl.shader.GlShader;
+
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
@@ -9,7 +11,7 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
  * vanilla lightmap and the GPU ray traced GI volume. Uniforms are declared here and bound per pass by
  * MixinChunkShaderInterface.
  */
-@Mixin(targets = "org.embeddedt.embeddium.impl.gl.shader.GlShader")
+@Mixin(GlShader.class)
 public abstract class MixinGlShader {
     @ModifyVariable(method = "<init>", at = @At("HEAD"), argsOnly = true, ordinal = 2)
     private static String rtrender$patch(String source) {

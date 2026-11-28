@@ -40,4 +40,8 @@
 dependencies {
     // OpenCL bindings that work on both Forge (LWJGL2) and Cleanroom (LWJGL3). Must NOT be relocated (JNI symbol names).
     shadowImplementation("org.jocl:jocl:2.0.5")
+
+    // Celeritas is an optional runtime dependency: we mixin into its shader / vertex-lighting pipeline for the
+    // raster + GI path, so it must be on the compile (and mixin-processing) classpath.
+    devOnlyNonPublishable(rfg.deobf(project.files("libs/celeritas.jar")))
 }
