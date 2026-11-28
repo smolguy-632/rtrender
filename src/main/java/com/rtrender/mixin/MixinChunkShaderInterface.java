@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Binds the GI volume texture + its origin/strength uniforms to Celeritas' currently bound chunk program.
  * Both hooks run while the program is active, so glUniform calls land on the right object.
  */
-@Mixin(DefaultChunkShaderInterface.class)
+@Mixin(targets = "org.embeddedt.embeddium.impl.render.chunk.shader.DefaultChunkShaderInterface", remap = false)
 public abstract class MixinChunkShaderInterface {
     @Inject(method = "setupState", at = @At("TAIL"))
     private void rtrender$bindGi(TerrainRenderPass pass, CallbackInfo ci) {
