@@ -41,14 +41,15 @@
 #define P_LIGHT 57
 #define P_HEATMAP 58
 #define P_YTOP 59       // exclusive top of the highest occupied 16-block section (window-local y)
+// node layout: uint4 { maskLo, maskHi, firstChildPtr, 0 } - one 16-byte load per visited node, 32-bit mask math only
 // ---- int block IP: 0 w, 1 h, 2 originX, 3 originZ, 4 atlasW, 5 atlasH, 6 blockShadows ----
 
-#define SA __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats, \
+#define SA __global const uint4* nodes, __global const ushort* mats, \
            __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint, \
            __global const ushort* palBox, __global const uint* colTint, \
            __global const int* emHead, __global const int* emNext, __global const float4* emPos, \
            __global const uint* atlas, __global const float* P, __global const int* IP
-#define SP masks, ptrs, mats, palFlags, palUV, palTint, palBox, colTint, emHead, emNext, emPos, atlas, P, IP
+#define SP nodes, mats, palFlags, palUV, palTint, palBox, colTint, emHead, emNext, emPos, atlas, P, IP
 
 // =====================================================================================================
 // sparse 64-tree resumable traversal
@@ -59,26 +60,25 @@ typedef struct {
     float t, t_end;
     int level, cs, node, ox, oy, oz, cx, cy, cz;
     float tx, ty, tz;
-    ulong m;
-    int s_node[LEVELS], s_cx[LEVELS], s_cy[LEVELS], s_cz[LEVELS];
-    float s_tx[LEVELS], s_ty[LEVELS], s_tz[LEVELS];
+    uint2 m;
+    int s_node[LEVELS], s_cell[LEVELS];      // per-level stack: node index and packed cell (cx | cy<<2 | cz<<4); t values are recomputed on ascent
     int axis;
-    int done;
+    int done, pend;
 } Tr;
 
 inline void tr_cell(Tr* s)
 {
     float3 p = s->o + s->d * s->t;
     float rcs = 1.0f / (float)s->cs;     // cs is a power of two -> exact reciprocal, same result as the division
-    s->cx = clamp((int)floor((p.x - (float)s->ox) * rcs), 0, 3);
-    s->cy = clamp((int)floor((p.y - (float)s->oy) * rcs), 0, 3);
-    s->cz = clamp((int)floor((p.z - (float)s->oz) * rcs), 0, 3);
+    s->cx = clamp((int)((p.x - (float)s->ox) * rcs), 0, 3);
+    s->cy = clamp((int)((p.y - (float)s->oy) * rcs), 0, 3);
+    s->cz = clamp((int)((p.z - (float)s->oz) * rcs), 0, 3);
     s->tx = (s->ox + (s->cx + (s->sx > 0)) * s->cs - s->o.x) * s->inv.x;
     s->ty = (s->oy + (s->cy + (s->sy > 0)) * s->cs - s->o.y) * s->inv.y;
     s->tz = (s->oz + (s->cz + (s->sz > 0)) * s->cs - s->o.z) * s->inv.z;
 }
 
-inline void tr_init(Tr* s, __global const ulong* masks, float3 o, float3 d, float max_t, float ytop)
+inline void tr_init(Tr* s, __global const uint4* nodes, float3 o, float3 d, float max_t, float ytop)
 {
     if (fabs(d.x) < 1e-6f) d.x = copysign(1e-6f, d.x);
     if (fabs(d.y) < 1e-6f) d.y = copysign(1e-6f, d.y);
@@ -92,16 +92,16 @@ inline void tr_init(Tr* s, __global const ulong* masks, float3 o, float3 d, floa
     s->t_end = fmin(fmin(tf.x, tf.y), fmin(tf.z, max_t));
     // nothing is occupied above ytop: an upward ray can stop as soon as it climbs past it (exact, saves the empty-sky walk)
     if (d.y > 0.0f) s->t_end = fmin(s->t_end, (ytop - o.y) * s->inv.y);
-    s->done = (s->t >= s->t_end);
+    s->done = (s->t >= s->t_end); s->pend = 0;
     s->level = LEVELS - 1; s->cs = 64; s->node = 0; s->ox = 0; s->oy = 0; s->oz = 0;
-    s->m = masks[0];
+    s->m = nodes[0].xy;
     s->axis = -1;
     if (tmin > 0.0f) s->axis = (tn.x >= tn.y && tn.x >= tn.z) ? 0 : ((tn.y >= tn.z) ? 1 : 2);
     tr_cell(s);
 }
 
 // step to the next cell of the current level (ascending as needed). returns 0 when the ray left the volume.
-inline int tr_advance(Tr* s, __global const ulong* masks)
+inline int tr_advance(Tr* s, __global const uint4* nodes)
 {
     int axis;
     if (s->tx < s->ty) { axis = (s->tx < s->tz) ? 0 : 2; } else { axis = (s->ty < s->tz) ? 1 : 2; }
@@ -115,42 +115,51 @@ inline int tr_advance(Tr* s, __global const ulong* masks)
     while (out) {
         if (s->level == LEVELS - 1) return 0;
         int l = ++s->level; s->cs <<= 2;
-        s->node = s->s_node[l]; s->m = masks[s->node];
-        s->ox -= s->s_cx[l] * s->cs; s->oy -= s->s_cy[l] * s->cs; s->oz -= s->s_cz[l] * s->cs;
-        s->cx = s->s_cx[l]; s->cy = s->s_cy[l]; s->cz = s->s_cz[l];
-        s->tx = s->s_tx[l]; s->ty = s->s_ty[l]; s->tz = s->s_tz[l];
-        if (axis == 0)      { s->cx += s->sx; s->tx += s->cs * s->ainv.x; out = (s->cx < 0 || s->cx > 3); }
-        else if (axis == 1) { s->cy += s->sy; s->ty += s->cs * s->ainv.y; out = (s->cy < 0 || s->cy > 3); }
-        else                { s->cz += s->sz; s->tz += s->cs * s->ainv.z; out = (s->cz < 0 || s->cz > 3); }
+        s->node = s->s_node[l]; s->m = nodes[s->node].xy;
+        int pc = s->s_cell[l];
+        int pcx = pc & 3, pcy = (pc >> 2) & 3, pcz = pc >> 4;
+        s->ox -= pcx * s->cs; s->oy -= pcy * s->cs; s->oz -= pcz * s->cs;
+        if (axis == 0) pcx += s->sx; else if (axis == 1) pcy += s->sy; else pcz += s->sz;
+        s->cx = pcx; s->cy = pcy; s->cz = pcz;
+        // exit distances of the parent cell, recomputed (replaces the saved tx/ty/tz of the old stack)
+        s->tx = (s->ox + (pcx + (s->sx > 0)) * s->cs - s->o.x) * s->inv.x;
+        s->ty = (s->oy + (pcy + (s->sy > 0)) * s->cs - s->o.y) * s->inv.y;
+        s->tz = (s->oz + (pcz + (s->sz > 0)) * s->cs - s->o.z) * s->inv.z;
+        out = (pcx < 0 || pcx > 3 || pcy < 0 || pcy > 3 || pcz < 0 || pcz > 3);
     }
     return 1;
 }
 
 // Returns the next occupied voxel along the ray (any non-zero mats entry) and moves the state past it.
-inline int tr_next(Tr* s, __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats,
+inline int tr_next(Tr* s, __global const uint4* nodes, __global const ushort* mats,
                    int* vx, int* vy, int* vz, uint* mat, float* tin, int* axis_out)
 {
+    if (s->pend) { s->pend = 0; if (!tr_advance(s, nodes)) { s->done = 1; return 0; } }
     for (int it = 0; it < 256; it++) {
         if (s->done) return 0;
         int bit = s->cx + s->cy * 4 + s->cz * 16;
-        if ((s->m >> bit) & 1UL) {
-            uint c = ptrs[s->node] + (uint)popcount(s->m & ((1UL << bit) - 1UL));
+        uint hiHalf = (uint)bit >> 5, b0 = (uint)bit & 31u;
+        uint word = hiHalf ? s->m.y : s->m.x;
+        if ((word >> b0) & 1u) {
+            // popcount of the set bits below `bit` using 32-bit ops only (64-bit shifts are emulated on many GPUs)
+            uint lm = (1u << b0) - 1u;
+            uint below = hiHalf ? (popcount(s->m.x) + popcount(s->m.y & lm)) : popcount(s->m.x & lm);
+            uint c = nodes[s->node].z + below;
             if (s->level == 0) {
                 *mat = (uint)mats[c];
                 *vx = s->ox + s->cx; *vy = s->oy + s->cy; *vz = s->oz + s->cz;
                 *tin = s->t; *axis_out = s->axis;
-                if (!tr_advance(s, masks)) s->done = 1;
+                s->pend = 1;
                 return 1;
             }
             int l = s->level;
-            s->s_node[l] = s->node; s->s_cx[l] = s->cx; s->s_cy[l] = s->cy; s->s_cz[l] = s->cz;
-            s->s_tx[l] = s->tx; s->s_ty[l] = s->ty; s->s_tz[l] = s->tz;
+            s->s_node[l] = s->node; s->s_cell[l] = s->cx | (s->cy << 2) | (s->cz << 4);
             s->ox += s->cx * s->cs; s->oy += s->cy * s->cs; s->oz += s->cz * s->cs;
-            s->level--; s->cs >>= 2; s->node = (int)c; s->m = masks[s->node];
+            s->level--; s->cs >>= 2; s->node = (int)c; s->m = nodes[s->node].xy;
             tr_cell(s);
             continue;
         }
-        if (!tr_advance(s, masks)) { s->done = 1; return 0; }
+        if (!tr_advance(s, nodes)) { s->done = 1; return 0; }
     }
     s->done = 1;
     return 0;
@@ -261,10 +270,10 @@ inline int eval_voxel(SA, float3 o, float3 d, int vx, int vy, int vz, int axis, 
 // any-hit visibility test (1 = unobstructed). Translucent blocks only dim the light.
 inline float shadow_vis(SA, float3 o, float3 d, float maxT)
 {
-    Tr s; tr_init(&s, masks, o, d, maxT, P[P_YTOP]);
+    Tr s; tr_init(&s, nodes, o, d, maxT, P[P_YTOP]);
     float vis = 1.0f;
     int vx, vy, vz, axis; uint mat; float tin;
-    while (tr_next(&s, masks, ptrs, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
+    while (tr_next(&s, nodes, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
         uint id = mat & 0x7fffu;
         uint fl = palFlags[id];
         if (fl & F_WATER) { vis *= 0.9f; continue; }
@@ -283,7 +292,7 @@ inline float3 sky_color(__global const float* P, float3 d)
     float h = clamp(d.y, 0.0f, 1.0f);
     float3 c = mix(fogc, zen, pow(h, 0.55f));
     float sd = fmax(dot(d, vload3p(P, P_SUNDIR)), 0.0f);
-    c += vload3p(P, P_SUNCOL) * pow(sd, 400.0f) * 6.0f;
+    if (sd > 0.9f) c += vload3p(P, P_SUNCOL) * pow(sd, 400.0f) * 6.0f;
     return c;
 }
 
@@ -318,7 +327,7 @@ inline float3 shade(SA, float3 hp, int face, float3 base, uint id, int vx, int v
     float3 sunPart = sunCol * (fmax(ndl, 0.0f) * vis * skyF);
 
     float3 warm = (float3)(1.0f, 0.78f, 0.45f);
-    float bl = pow(blkF, 1.6f) * 1.15f;
+    float bl = (blkF > 0.0f) ? pow(blkF, 1.6f) * 1.15f : 0.0f;
     float blkPart = bl * faceShade;
     if (IP[6] != 0 && blkF > 0.04f) {
         int csx = (int)floor(hp.x) >> 4, csy = (int)floor(hp.y) >> 4, csz = (int)floor(hp.z) >> 4;
@@ -362,11 +371,11 @@ inline Res trace_color(SA, float3 o, float3 d, float maxDist, int mode)
     r.acc = (float3)(0.0f); r.T = 1.0f; r.steps = 0;
     float fogStart = P[P_FOGSTART], fogEnd = P[P_FOGEND];
     float3 fogc = vload3p(P, P_FOG);
-    Tr s; tr_init(&s, masks, o, d, maxDist, P[P_YTOP]);
+    Tr s; tr_init(&s, nodes, o, d, maxDist, P[P_YTOP]);
     float3 acc = (float3)(0.0f); float T = 1.0f;
     int first = 1, under = 0, nt = 0;
     int vx, vy, vz, axis; uint mat; float tin;
-    while (tr_next(&s, masks, ptrs, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
+    while (tr_next(&s, nodes, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
         r.steps++;
         uint id = mat & 0x7fffu;
         uint fl = palFlags[id];
@@ -430,7 +439,7 @@ inline float3 wave_normal(float2 xz, float t, float amp)
 }
 
 __kernel void render(
-    __global const ulong* masks, __global const uint* ptrs, __global const ushort* mats,
+    __global const uint4* nodes, __global const ushort* mats,
     __global const uchar* palFlags, __global const ushort* palUV, __global const uint* palTint,
     __global const ushort* palBox, __global const uint* colTint,
     __global const int* emHead, __global const int* emNext, __global const float4* emPos,

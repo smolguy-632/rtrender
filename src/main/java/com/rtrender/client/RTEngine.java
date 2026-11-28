@@ -17,7 +17,7 @@ public final class RTEngine {
     private final cl_command_queue queue;
     private final cl_program program;
     private final cl_kernel kernel;
-    private final Buf bMasks, bPtrs, bMats, bFlags, bUV, bTint, bBox, bCol, bEmHead, bEmNext, bEmPos,
+    private final Buf bNodes, bMats, bFlags, bUV, bTint, bBox, bCol, bEmHead, bEmNext, bEmPos,
             bAtlas, bP, bIP, bOutC, bOutD;
     private int atlasW, atlasH;
     private boolean hasScene, hasAtlas;
@@ -43,7 +43,7 @@ public final class RTEngine {
         queue = clCreateCommandQueue(ctx, dev, 0, null);
         program = clCreateProgramWithSource(ctx, 1, new String[]{readKernel()}, null, null);
         try {
-            clBuildProgram(program, 0, null, null, null, null);
+            clBuildProgram(program, 0, null, "-cl-mad-enable", null, null);
         } catch (CLException e) {
             long[] sz = new long[1];
             clGetProgramBuildInfo(program, dev, CL_PROGRAM_BUILD_LOG, 0, null, sz);
@@ -53,7 +53,7 @@ public final class RTEngine {
         }
         kernel = clCreateKernel(program, "render", null);
         long ro = CL_MEM_READ_ONLY, rw = CL_MEM_READ_WRITE;
-        bMasks = new Buf(ro); bPtrs = new Buf(ro); bMats = new Buf(ro); bFlags = new Buf(ro); bUV = new Buf(ro);
+        bNodes = new Buf(ro); bMats = new Buf(ro); bFlags = new Buf(ro); bUV = new Buf(ro);
         bTint = new Buf(ro); bBox = new Buf(ro); bCol = new Buf(ro); bEmHead = new Buf(ro);
         bEmNext = new Buf(ro); bEmPos = new Buf(ro); bAtlas = new Buf(ro); bP = new Buf(ro); bIP = new Buf(ro);
         bOutC = new Buf(rw); bOutD = new Buf(rw);
@@ -119,8 +119,13 @@ public final class RTEngine {
 
     public void uploadScene(RTRenderer.Published p) {
         Tree64 t = p.tree;
-        write(bMasks, Pointer.to(t.masks), 8L * t.nodeCount);
-        write(bPtrs, Pointer.to(t.ptrs), 4L * t.nodeCount);
+        // interleave {maskLo, maskHi, ptr, 0} so the kernel needs a single 16-byte load per node
+        int[] nodes = new int[t.nodeCount * 4];
+        for (int i = 0; i < t.nodeCount; i++) {
+            long m = t.masks[i];
+            nodes[i * 4] = (int) m; nodes[i * 4 + 1] = (int) (m >>> 32); nodes[i * 4 + 2] = t.ptrs[i];
+        }
+        write(bNodes, Pointer.to(nodes), 16L * t.nodeCount);
         write(bMats, Pointer.to(t.mats), 2L * t.mats.length);
         BlockPalette.Snapshot ps = p.palette;
         write(bFlags, Pointer.to(ps.flags), 1L * ps.count);
@@ -150,14 +155,16 @@ public final class RTEngine {
         long px = (long) w * h;
         bOutC.ensure(4L * px); bOutD.ensure(4L * px);
         arg = 0;
-        argMem(bMasks); argMem(bPtrs); argMem(bMats); argMem(bFlags); argMem(bUV); argMem(bTint); argMem(bBox);
+        argMem(bNodes); argMem(bMats); argMem(bFlags); argMem(bUV); argMem(bTint); argMem(bBox);
         argMem(bCol); argMem(bEmHead); argMem(bEmNext); argMem(bEmPos); argMem(bAtlas);
         argMem(bP); argMem(bIP); argMem(bOutC); argMem(bOutD);
         // the kernel maps work items to 8x8 pixel tiles (coherent rays); partial edge tiles are masked off in the kernel
         long tiles = (long) ((w + 7) >> 3) * ((h + 7) >> 3);
         clEnqueueNDRangeKernel(queue, kernel, 1, null, new long[]{tiles * 64L}, null, 0, null, null);
         color.position(0); depth.position(0);
-        clEnqueueReadBuffer(queue, bOutC.mem, true, 0, 4L * px, Pointer.to(color), 0, null, null);
+        // direct buffers have stable addresses, so the first read can be non-blocking; the in-order queue
+        // guarantees it is complete when the second (blocking) read returns
+        clEnqueueReadBuffer(queue, bOutC.mem, false, 0, 4L * px, Pointer.to(color), 0, null, null);
         clEnqueueReadBuffer(queue, bOutD.mem, true, 0, 4L * px, Pointer.to(depth), 0, null, null);
         return (System.nanoTime() - t0) / 1e6;
     }
