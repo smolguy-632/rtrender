@@ -16,11 +16,12 @@ public final class RTEngine {
     private final cl_context ctx;
     private final cl_command_queue queue;
     private final cl_program program;
-    private final cl_kernel kernel;
+    private final cl_kernel kernel, giKernel;
     private final Buf bNodes, bMats, bFlags, bUV, bTint, bBox, bCol, bEmHead, bEmNext, bEmPos,
-            bAtlas, bP, bIP, bOutC, bOutD;
+            bAtlas, bP, bIP, bOutC, bOutD, bGI, bGP;
     private int atlasW, atlasH;
     private boolean hasScene, hasAtlas;
+    private ByteBuffer giRead;      // staging buffer for one GI batch readback
 
     private final class Buf {
         cl_mem mem; long cap;
@@ -40,7 +41,7 @@ public final class RTEngine {
         cl_context_properties props = new cl_context_properties();
         props.addProperty(CL_CONTEXT_PLATFORM, plat);
         ctx = clCreateContext(props, 1, new cl_device_id[]{dev}, null, null, null);
-        queue = clCreateCommandQueue(ctx, dev, 0, null);
+        queue = clCreateCommandQueue(ctx, dev, CL_QUEUE_PROFILING_ENABLE, null);
         program = clCreateProgramWithSource(ctx, 1, new String[]{readKernel()}, null, null);
         try {
             clBuildProgram(program, 0, null, "-cl-mad-enable", null, null);
@@ -52,11 +53,14 @@ public final class RTEngine {
             throw new IllegalStateException("OpenCL build failed:\n" + new String(log), e);
         }
         kernel = clCreateKernel(program, "render", null);
+        giKernel = clCreateKernel(program, "gi_bake", null);
         long ro = CL_MEM_READ_ONLY, rw = CL_MEM_READ_WRITE;
         bNodes = new Buf(ro); bMats = new Buf(ro); bFlags = new Buf(ro); bUV = new Buf(ro);
         bTint = new Buf(ro); bBox = new Buf(ro); bCol = new Buf(ro); bEmHead = new Buf(ro);
         bEmNext = new Buf(ro); bEmPos = new Buf(ro); bAtlas = new Buf(ro); bP = new Buf(ro); bIP = new Buf(ro);
         bOutC = new Buf(rw); bOutD = new Buf(rw);
+        bGI = new Buf(rw); bGP = new Buf(ro);
+        giRead = java.nio.ByteBuffer.allocateDirect(GIVolume.CELLS * 4).order(java.nio.ByteOrder.nativeOrder());
     }
 
     private static String readKernel() throws Exception {
@@ -145,7 +149,14 @@ public final class RTEngine {
     }
 
     private int arg;
-    private void argMem(Buf b) { clSetKernelArg(kernel, arg++, Sizeof.cl_mem, Pointer.to(b.mem)); }
+    private void argMem(cl_kernel k, Buf b) { clSetKernelArg(k, arg++, Sizeof.cl_mem, Pointer.to(b.mem)); }
+
+    private void sceneArgs(cl_kernel k) {
+        arg = 0;
+        argMem(k, bNodes); argMem(k, bMats); argMem(k, bFlags); argMem(k, bUV); argMem(k, bTint); argMem(k, bBox);
+        argMem(k, bCol); argMem(k, bEmHead); argMem(k, bEmNext); argMem(k, bEmPos); argMem(k, bAtlas);
+        argMem(k, bP); argMem(k, bIP);
+    }
 
     /** Traces w*h pixels and reads colour (RGBA8, premultiplied) and window depth (float) back. @return ms */
     public double render(float[] P, int[] IP, int w, int h, ByteBuffer color, ByteBuffer depth) {
@@ -154,10 +165,8 @@ public final class RTEngine {
         write(bIP, Pointer.to(IP), 4L * IP.length);
         long px = (long) w * h;
         bOutC.ensure(4L * px); bOutD.ensure(4L * px);
-        arg = 0;
-        argMem(bNodes); argMem(bMats); argMem(bFlags); argMem(bUV); argMem(bTint); argMem(bBox);
-        argMem(bCol); argMem(bEmHead); argMem(bEmNext); argMem(bEmPos); argMem(bAtlas);
-        argMem(bP); argMem(bIP); argMem(bOutC); argMem(bOutD);
+        sceneArgs(kernel);
+        argMem(kernel, bOutC); argMem(kernel, bOutD);
         // the kernel maps work items to 8x8 pixel tiles (coherent rays); partial edge tiles are masked off in the kernel
         long tiles = (long) ((w + 7) >> 3) * ((h + 7) >> 3);
         clEnqueueNDRangeKernel(queue, kernel, 1, null, new long[]{tiles * 64L}, null, 0, null, null);
@@ -167,5 +176,45 @@ public final class RTEngine {
         clEnqueueReadBuffer(queue, bOutC.mem, false, 0, 4L * px, Pointer.to(color), 0, null, null);
         clEnqueueReadBuffer(queue, bOutD.mem, true, 0, 4L * px, Pointer.to(depth), 0, null, null);
         return (System.nanoTime() - t0) / 1e6;
+    }
+
+    /**
+     * Bakes GI for the linear cell range [from, to) into {@code out} at {@code outOffset}.
+     * @return the GPU time the kernel actually took, in milliseconds (used to size the next batch)
+     */
+    public double bakeGI(float[] P, int[] IP, int[] GP, int from, int to, java.nio.ByteBuffer out, int outOffset) {
+        long cells = to - from;
+        if (cells <= 0) return 0;
+        write(bP, Pointer.to(P), 4L * P.length);
+        write(bIP, Pointer.to(IP), 4L * IP.length);
+        write(bGP, Pointer.to(GP), 4L * GP.length);
+        bGI.ensure(4L * GIVolume.CELLS);
+        sceneArgs(giKernel);
+        argMem(giKernel, bGI); argMem(giKernel, bGP);
+
+        cl_event ev = new cl_event();
+        clEnqueueNDRangeKernel(queue, giKernel, 1, null, new long[]{cells}, null, 0, null, ev);
+        long bytes = 4L * cells;
+        giRead.clear();
+        clEnqueueReadBuffer(queue, bGI.mem, true, 4L * from, bytes, Pointer.to(giRead), 0, null, null);
+
+        double gpuMs = 0;
+        try {
+            long[] s = new long[1], e = new long[1];
+            clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_START, Sizeof.cl_long, Pointer.to(s), null);
+            clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, Sizeof.cl_long, Pointer.to(e), null);
+            gpuMs = (e[0] - s[0]) / 1e6;
+        } catch (CLException ignored) {
+            gpuMs = 0;
+        }
+        clReleaseEvent(ev);
+
+        giRead.clear();
+        giRead.limit((int) bytes);
+        out.clear();
+        out.position(outOffset);
+        out.put(giRead);
+        out.clear();
+        return gpuMs;
     }
 }

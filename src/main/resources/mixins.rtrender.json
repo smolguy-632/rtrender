@@ -6,7 +6,7 @@
   "compatibilityLevel": "JAVA_8",
   "priority": 2500,
   "mixins": [],
-  "client": ["MixinRenderGlobal"],
+  "client": ["MixinRenderGlobal", "MixinGlShader", "MixinChunkShaderInterface"],
   "server": [],
   "injectors": { "defaultRequire": 1 }
 }

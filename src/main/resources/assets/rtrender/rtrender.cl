@@ -540,3 +540,190 @@ __kernel void render(
     outColor[gid] = pr | (pg << 8) | (pbv << 16) | (pa8 << 24);
     outDepth[gid] = depth;
 }
+
+// =====================================================================================================
+// GI bake: per-cell light for the rasterised terrain.
+// Celeritas' vertex shader samples the result as a 3D texture, so lighting changes never need a remesh.
+//
+// One hemisphere ray per sample does double duty: rays that escape count as sky visibility, rays that
+// hit a surface feed the single bounce of colour bleed. GP layout:
+//   0 from, 1 to      linear cell range [from,to) of the dimX*dimY*dimZ volume
+//   2 dimX, 3 dimY, 4 cell size (blocks)
+//   5..7 volume origin in world blocks
+//   8 rays per cell   9 flags: 1 = sun shadows, 2 = bounce, 4 = emitters
+// =====================================================================================================
+
+inline float3 gi_dir6(int d)
+{
+    if (d == 0) return (float3)(1.0f, 0.0f, 0.0f);
+    if (d == 1) return (float3)(-1.0f, 0.0f, 0.0f);
+    if (d == 2) return (float3)(0.0f, 1.0f, 0.0f);
+    if (d == 3) return (float3)(0.0f, -1.0f, 0.0f);
+    if (d == 4) return (float3)(0.0f, 0.0f, 1.0f);
+    return (float3)(0.0f, 0.0f, -1.0f);
+}
+
+// Cosine-weighted hemisphere direction around +Y, low-discrepancy in the azimuth.
+inline float3 gi_hemi(int i, int n)
+{
+    float xi = ((float)i + 0.5f) / (float)n;
+    float st = sqrt(xi), ct = sqrt(fmax(0.0f, 1.0f - xi));
+    float ph = (float)i * 2.39996323f;
+    return (float3)(st * cos(ph), ct, st * sin(ph));
+}
+
+// Is window-local voxel (x,y,z) occupied? Four mask lookups, no ray traversal.
+inline int gi_occupied(SA, int x, int y, int z)
+{
+    if (x < 0 || x > 255 || y < 0 || y > 255 || z < 0 || z > 255) return 0;
+    int node = 0, ox = 0, oy = 0, oz = 0, cs = 64;
+    for (int l = LEVELS - 1; l >= 0; l--) {
+        int cx = (x - ox) / cs, cy = (y - oy) / cs, cz = (z - oz) / cs;
+        int bit = cx + cy * 4 + cz * 16;
+        uint hiHalf = (uint)bit >> 5, b0 = (uint)bit & 31u;
+        uint word = hiHalf ? nodes[node].y : nodes[node].x;
+        if (!((word >> b0) & 1u)) return 0;
+        if (l == 0) return 1;
+        uint lm = (1u << b0) - 1u;
+        uint below = hiHalf ? (popcount(nodes[node].x) + popcount(nodes[node].y & lm)) : popcount(nodes[node].x & lm);
+        ox += cx * cs; oy += cy * cs; oz += cz * cs;
+        cs >>= 2; node = (int)(nodes[node].z + below);
+    }
+    return 1;
+}
+
+// Light leaving a surface point towards the sky and the sun (used by the bounce term).
+inline float3 gi_surface_light(SA, float3 fp)
+{
+    float3 skyTint = (float3)(0.88f, 0.94f, 1.0f);
+    float skyAmb = P[P_SKYAMB];
+    float3 sunDir = vload3p(P, P_SUNDIR), sunCol = vload3p(P, P_SUNCOL);
+    float hitSky = shadow_vis(SP, fp + (float3)(0.0f, 0.02f, 0.0f), (float3)(0.0f, 1.0f, 0.0f), P[P_SHADOWDIST]);
+    float hitSun = 0.0f;
+    if (hitSky > 0.0f && sunDir.y > 0.0f)
+        hitSun = shadow_vis(SP, fp + sunDir * 0.02f, sunDir, P[P_SHADOWDIST]);
+    return skyTint * (skyAmb * hitSky) + sunCol * (hitSun * fmax(sunDir.y, 0.0f));
+}
+
+// One hemisphere ray. Returns how much sky it can still see (1 = clean escape); when bounce is enabled
+// the light arriving from the first real surface it meets is accumulated into *bounce.
+inline float gi_ray(SA, float3 o, float3 d, float maxT, int doBounce, float3* bounce)
+{
+    Tr s; tr_init(&s, nodes, o, d, maxT, P[P_YTOP]);
+    float vis = 1.0f;
+    int vx, vy, vz, axis; uint mat; float tin;
+    while (tr_next(&s, nodes, mats, &vx, &vy, &vz, &mat, &tin, &axis)) {
+        uint id = mat & 0x7fffu;
+        uint fl = palFlags[id];
+        if (fl & F_WATER) { vis *= 0.9f; continue; }
+        if (fl & F_TRANSL) { vis *= 0.8f; continue; }
+        if (!(fl & F_SHADOW)) continue;
+        if (!doBounce) return 0.0f;
+        float th; int face; float4 tex;
+        if (!eval_voxel(SP, o, d, vx, vy, vz, axis, tin, id, &th, &face, &tex)) continue;
+        *bounce += tex.xyz * gi_surface_light(SP, o + d * th - d * 0.02f);
+        return 0.0f;
+    }
+    return vis;
+}
+
+__kernel void gi_bake(
+    SA,
+    __global uint* outLight,
+    __global const int* GP)
+{
+    int gid = get_global_id(0);
+    int idx = GP[0] + gid;
+    if (idx >= GP[1]) return;
+
+    int dimX = GP[2], dimY = GP[3], cell = GP[4];
+    int i = idx % dimX, t = idx / dimX;
+    int j = t % dimY, k = t / dimY;
+
+    float3 lo = (float3)((float)(GP[5] + (i + 0.5f) * cell),
+                         (float)(GP[6] + (j + 0.5f) * cell),
+                         (float)(GP[7] + (k + 0.5f) * cell))
+                - (float3)((float)IP[2], 0.0f, (float)IP[3]);
+
+    // A cell whose centre sits inside geometry must borrow the light of the nearest open voxel: surface
+    // vertices land exactly on a cell boundary, so without this every one of them would sample 50 % dark.
+    if (gi_occupied(SP, (int)floor(lo.x), (int)floor(lo.y), (int)floor(lo.z))) {
+        int lvx = (int)floor(lo.x), lvy = (int)floor(lo.y), lvz = (int)floor(lo.z);
+        int found = 0;
+        for (int d = 0; d < 6 && !found; d++) {
+            float3 dd = gi_dir6(d);
+            for (int s = 1; s <= cell && !found; s++) {
+                int nx = lvx + (int)(dd.x * s), ny = lvy + (int)(dd.y * s), nz = lvz + (int)(dd.z * s);
+                if (!gi_occupied(SP, nx, ny, nz)) {
+                    lo = (float3)((float)nx + 0.5f, (float)ny + 0.5f, (float)nz + 0.5f);
+                    found = 1;
+                }
+            }
+        }
+        if (!found) { outLight[idx] = 0u; return; }   // sealed inside rock: no light reaches it
+    }
+
+    int N = GP[8], flags = GP[9];
+    float maxT = P[P_SHADOWDIST];
+    float3 skyTint = (float3)(0.88f, 0.94f, 1.0f);
+    float3 sunDir = vload3p(P, P_SUNDIR), sunCol = vload3p(P, P_SUNCOL);
+
+    float skyVis = 0.0f;
+    float3 bounce = (float3)(0.0f);
+    int doBounce = (flags & 2) != 0;
+    for (int r = 0; r < N; r++) {
+        float3 d = gi_hemi(r, N);
+        skyVis += gi_ray(SP, lo + d * 0.02f, d, maxT, doBounce, &bounce);
+    }
+    float invN = 1.0f / (float)N;
+    skyVis *= invN;
+    bounce *= invN;
+
+    int vx, vy, vz, axis; uint mat; float tin;
+
+    // direct sun on this cell (only worth testing when some sky is visible at all)
+    float sunLit = 0.0f;
+    if ((flags & 1) != 0 && skyVis > 0.0f && sunDir.y > 0.0f) {
+        Tr sh; tr_init(&sh, nodes, lo + sunDir * 0.02f, sunDir, maxT, P[P_YTOP]);
+        if (!tr_next(&sh, nodes, mats, &vx, &vy, &vz, &mat, &tin, &axis)) sunLit = 1.0f;
+    }
+
+    // ray traced torch / glowstone light
+    float3 emi = (float3)(0.0f);
+    if ((flags & 4) != 0) {
+        int csx = ((int)floor(lo.x)) >> 4, csy = ((int)floor(lo.y)) >> 4, csz = ((int)floor(lo.z)) >> 4;
+        if (csx >= 0 && csx <= 15 && csy >= 0 && csy <= 15 && csz >= 0 && csz <= 15) {
+            float4 best = (float4)(0.0f); float bestS = 0.0f;
+            for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) {
+                int sx = csx + dx, sy = csy + dy, sz = csz + dz;
+                if (sx < 0 || sx > 15 || sy < 0 || sy > 15 || sz < 0 || sz > 15) continue;
+                int guard = 0;
+                for (int e = emHead[(sx << 8) | (sy << 4) | sz]; e >= 0 && guard < 10; e = emNext[e], guard++) {
+                    float4 ep = emPos[e];
+                    float3 L = ep.xyz - lo;
+                    float d2 = dot(L, L);
+                    if (d2 < 0.25f || d2 > 324.0f) continue;
+                    float sc = ep.w / fmax(1.0f, d2);
+                    if (sc > bestS) { bestS = sc; best = ep; }
+                }
+            }
+            if (best.w > 0.5f) {
+                float3 L = best.xyz - lo;
+                float dist = length(L);
+                L /= dist;
+                Tr sh; tr_init(&sh, nodes, lo + L * 0.02f, L, fmax(dist - 0.6f, 0.05f), P[P_YTOP]);
+                float v2 = tr_next(&sh, nodes, mats, &vx, &vy, &vz, &mat, &tin, &axis) ? 0.0f : 1.0f;
+                float direct = (best.w / 15.0f) * v2 / (1.0f + 0.06f * dist * dist);
+                emi = (float3)(1.0f, 0.78f, 0.45f) * direct;
+            }
+        }
+    }
+
+    float3 gi = skyTint * (P[P_SKYAMB] * skyVis)
+              + sunCol * (sunLit * fmax(sunDir.y, 0.0f))
+              + bounce
+              + emi;
+    gi = clamp(gi, 0.0f, 1.0f);
+    uint pr = (uint)(gi.x * 255.0f + 0.5f), pg = (uint)(gi.y * 255.0f + 0.5f), pb = (uint)(gi.z * 255.0f + 0.5f);
+    outLight[idx] = pr | (pg << 8) | (pb << 16) | (255u << 24);
+}

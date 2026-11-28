@@ -78,6 +78,14 @@ public final class RTRenderer {
     private int bufPixels;
     private final FloatBuffer matBuf = ByteBuffer.allocateDirect(64).order(ByteOrder.nativeOrder()).asFloatBuffer();
 
+    // raster mode: GPU GI volume + one bake batch per game tick
+    private final GIVolume gi = new GIVolume();
+    private int giSlices = 2;
+    private final float[] giP = new float[64];
+    private final int[] giIP = new int[7];
+    private final int[] giGP = new int[10];
+    private double giMs;
+
     private RTRenderer() {}
 
     // ------------------------------------------------------------------------------ events (main thread)
@@ -86,18 +94,22 @@ public final class RTRenderer {
     public void onWorldUnload(World w) {
         w.removeEventListener(listener);
         current = null; pending.set(null); everPublished = false;
+        gi.reset();
     }
 
     public void onAtlasReload() {
         atlasDirty = true; current = null; pending.set(null); everPublished = false;
         vol.reset();
+        gi.reset();
     }
 
     public void onClientTick(Minecraft mc) {
         if (failed || mc.world == null || mc.player == null) return;
         if (mc.world != lastWorld) {
             lastWorld = mc.world; vol.reset(); current = null; pending.set(null); everPublished = false; sinceLast = 0;
+            gi.reset();
         }
+        if (!RTConfig.fullRaytrace) giTick(mc);
         int pcx = MathHelper.floor(mc.player.posX) >> 4, pcz = MathHelper.floor(mc.player.posZ) >> 4;
         vol.recenter(pcx, pcz);
         // scan faster until the first complete snapshot exists
@@ -134,6 +146,69 @@ public final class RTRenderer {
                 }
             }
         });
+    }
+
+    // ------------------------------------------------------------------------------ raster + GPU GI
+    /** One GI bake batch per game tick. Sized to stay inside RTConfig.giFrameBudgetUs. */
+    private void giTick(Minecraft mc) {
+        if (failed || mc.world == null || mc.player == null) return;
+        try {
+            if (engine == null) {
+                engine = RTEngine.create(RTConfig.openclDevice, RTConfig.skipD3D12Devices);
+                LOG.info("GI using OpenCL device: {}", engine.deviceName);
+            }
+            if (atlasDirty) uploadAtlas(mc);
+            Published p = pending.getAndSet(null);
+            if (p != null) { engine.uploadScene(p); current = p; }
+            if (current == null || !engine.hasAtlas() || !engine.hasScene()) return;
+            if (!RTConfig.giEnabled) return;
+
+            Entity view = mc.getRenderViewEntity();
+            if (view == null) return;
+            updateSky(mc.world, view, 0f);
+            int rd = mc.gameSettings.renderDistanceChunks * 16;
+            if (!gi.ensure(rd, view.posX, view.posY, view.posZ, cachedSkyAmb)) return;
+
+            int perZ = GIVolume.DIM * GIVolume.DIM;
+            int z0 = gi.cursor() / perZ;
+            int target = Math.max(1, (GIVolume.DIM + RTConfig.giUpdateIntervalTicks - 1) / RTConfig.giUpdateIntervalTicks);
+            if (giSlices > target) giSlices = target;
+            int n = Math.min(giSlices, GIVolume.DIM - z0);
+            int from = z0 * perZ, to = (z0 + n) * perZ;
+
+            Published c = current;
+            java.util.Arrays.fill(giP, 0f);
+            giP[35] = cachedSdir[0]; giP[36] = cachedSdir[1]; giP[37] = cachedSdir[2];
+            giP[38] = cachedScol[0]; giP[39] = cachedScol[1]; giP[40] = cachedScol[2];
+            giP[51] = (float) RTConfig.shadowDistance;
+            giP[53] = cachedSkyAmb;
+            giP[59] = c.topY + 0.01f;
+            giIP[0] = 0; giIP[1] = 0; giIP[2] = c.originX; giIP[3] = c.originZ;
+            giIP[4] = atlasSize[0]; giIP[5] = atlasSize[1]; giIP[6] = 0;
+            giGP[0] = from; giGP[1] = to;
+            giGP[2] = GIVolume.DIM; giGP[3] = GIVolume.DIM; giGP[4] = gi.cell;
+            giGP[5] = gi.originX; giGP[6] = gi.originY; giGP[7] = gi.originZ;
+            giGP[8] = Math.max(1, RTConfig.giRaysPerCell);
+            giGP[9] = (RTConfig.giSunShadows ? 1 : 0) | (RTConfig.giBounce ? 2 : 0) | (RTConfig.giEmitters ? 4 : 0);
+
+            int before = gi.cursor();
+            double ms = engine.bakeGI(giP, giIP, giGP, from, to, gi.buffer(), from * 4);
+            gi.upload(z0, z0 + n);
+            gi.advanceCursor(n * perZ);
+            if (gi.cursor() <= before) gi.bakedOnce = true;
+            adaptGiSlices(ms, target);
+        } catch (Throwable t) {
+            LOG.error("GI bake failed, disabling", t);
+            failed = true;
+        }
+    }
+
+    private void adaptGiSlices(double ms, int target) {
+        giMs = ms;
+        if (ms <= 0.001 || target <= 1) return;
+        double budget = RTConfig.giFrameBudgetUs / 1000.0;
+        int want = (int) Math.round(giSlices * (budget / ms));
+        giSlices = Math.max(1, Math.min(target, want));
     }
 
     // ------------------------------------------------------------------------------ render hook
@@ -182,6 +257,30 @@ public final class RTRenderer {
         return t * t * (3f - 2f * t);
     }
 
+    /** Refresh the cached sun / moon / sky colours. Called by both the ray traced and the raster paths. */
+    private void updateSky(World world, Entity view, float pt) {
+        double nowT = world.getTotalWorldTime() + pt;
+        if (nowT == cachedTime) return;
+        cachedTime = nowT;
+        float ang = world.getCelestialAngle(pt) * (float) (Math.PI * 2.0);
+        cachedSunY = (float) Math.cos(ang); cachedSunX = -(float) Math.sin(ang);
+        cachedRain = world.getRainStrength(pt);
+        cachedDayF = smooth(-0.05f, 0.25f, cachedSunY);
+        cachedNightF = smooth(0.0f, 0.25f, -cachedSunY);
+        if (cachedSunY > -0.04f) {
+            cachedSdir = new float[]{cachedSunX, cachedSunY, 0f};
+            float warm = smooth(0.0f, 0.4f, cachedSunY);
+            float k = (float) RTConfig.sunStrength * cachedDayF * (1f - 0.85f * cachedRain);
+            cachedScol = new float[]{k * 1.0f, k * (0.55f + 0.40f * warm), k * (0.30f + 0.55f * warm)};
+        } else {
+            cachedSdir = new float[]{-cachedSunX, -cachedSunY, 0f};
+            float k = 0.55f * cachedNightF * (1f - 0.8f * cachedRain);
+            cachedScol = new float[]{0.30f * k, 0.38f * k, 0.62f * k};
+        }
+        cachedSkyAmb = (0.16f + (0.70f - 0.16f) * cachedDayF) * (1f - 0.3f * cachedRain);
+        cachedZen = world.getSkyColor(view, pt); cachedFog = world.getFogColor(pt);
+    }
+
     public void renderTerrain(float pt) {
         Minecraft mc = Minecraft.getMinecraft();
         World world = mc.world;
@@ -212,27 +311,7 @@ public final class RTRenderer {
             double ez = view.lastTickPosZ + (view.posZ - view.lastTickPosZ) * pt;
 
             // ---- sun / moon / sky (cached: sky/fog/celestial change slowly)
-            double nowT = world.getTotalWorldTime() + pt;
-            if (nowT != cachedTime) {
-                cachedTime = nowT;
-                float ang = world.getCelestialAngle(pt) * (float) (Math.PI * 2.0);
-                cachedSunY = (float) Math.cos(ang); cachedSunX = -(float) Math.sin(ang);
-                cachedRain = world.getRainStrength(pt);
-                cachedDayF = smooth(-0.05f, 0.25f, cachedSunY);
-                cachedNightF = smooth(0.0f, 0.25f, -cachedSunY);
-                if (cachedSunY > -0.04f) {
-                    cachedSdir = new float[]{cachedSunX, cachedSunY, 0f};
-                    float warm = smooth(0.0f, 0.4f, cachedSunY);
-                    float k = (float) RTConfig.sunStrength * cachedDayF * (1f - 0.85f * cachedRain);
-                    cachedScol = new float[]{k * 1.0f, k * (0.55f + 0.40f * warm), k * (0.30f + 0.55f * warm)};
-                } else {
-                    cachedSdir = new float[]{-cachedSunX, -cachedSunY, 0f};
-                    float k = 0.55f * cachedNightF * (1f - 0.8f * cachedRain);
-                    cachedScol = new float[]{0.30f * k, 0.38f * k, 0.62f * k};
-                }
-                cachedSkyAmb = (0.16f + (0.70f - 0.16f) * cachedDayF) * (1f - 0.3f * cachedRain);
-                cachedZen = world.getSkyColor(view, pt); cachedFog = world.getFogColor(pt);
-            }
+            updateSky(world, view, pt);
             float sunY = cachedSunY, sunX = cachedSunX, rain = cachedRain, dayF = cachedDayF, nightF = cachedNightF;
             float[] sdir = cachedSdir, scol = cachedScol;
             float skyAmb = cachedSkyAmb;
